@@ -5,7 +5,7 @@
   "PathFilename": "_pack\\40-50\\The Hinterlands\\41-42 wolves.json", // todo update profile
   "PathReduceSteps": true,
   "PathThereAndBack": false,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "IntVariables": {
     "MIN_HP_FOOD%": 40,
     "MIN_RUNE_TO_DUMP": 40,

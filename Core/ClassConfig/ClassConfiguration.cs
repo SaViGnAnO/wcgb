@@ -79,135 +79,15 @@ public sealed partial class ClassConfiguration
     public KeyAction[] GatherFindKeyConfig { get; set; } = Array.Empty<KeyAction>();
     public string[] GatherFindKeys { get; init; } = Array.Empty<string>();
 
-    public KeyAction Jump { get; } = new();
-    public string JumpKey { get; init; } = "Spacebar";
-
-    public KeyAction Interact { get; } = new();
-    public string InteractKey { get; init; } = "I";
-
-    public KeyAction InteractMouseOver { get; } = new();
-    public string InteractMouseOverKey { get; init; } = "J";
-
-    public KeyAction Approach { get; } = new();
-    public KeyAction AutoAttack { get; } = new();
-
-    public KeyAction TargetLastTarget { get; } = new();
-    public string TargetLastTargetKey { get; init; } = "G";
-
-    public KeyAction StandUp { get; } = new();
-    public string StandUpKey { get; init; } = "X";
-
-    public KeyAction ClearTarget { get; } = new();
-    public string ClearTargetKey { get; init; } = "Insert";
-
-    public KeyAction StopAttack { get; } = new();
-    public string StopAttackKey { get; init; } = "Delete";
-
-    public KeyAction TargetNearestTarget { get; } = new();
-    public string TargetNearestTargetKey { get; init; } = "Tab";
-
-    public KeyAction TargetTargetOfTarget { get; } = new();
-    public string TargetTargetOfTargetKey { get; init; } = "F";
-    public KeyAction TargetPet { get; } = new();
-    public string TargetPetKey { get; init; } = "Multiply";
-
-    public KeyAction PetAttack { get; } = new();
-    public string PetAttackKey { get; init; } = "Subtract";
-
-    public KeyAction TargetFocus { get; } = new();
-    public string TargetFocusKey { get; init; } = "PageUp";
-
-    public KeyAction FollowTarget { get; } = new();
-    public string FollowTargetKey { get; init; } = "PageDown";
-
-    public KeyAction Mount { get; } = new();
-    public string MountKey { get; init; } = "O";
-
-    public ConsoleKey ForwardKey { get; init; } = ConsoleKey.UpArrow;  // 38
-    public ConsoleKey BackwardKey { get; init; } = ConsoleKey.DownArrow; // 40
-    public ConsoleKey TurnLeftKey { get; init; } = ConsoleKey.LeftArrow; // 37
-    public ConsoleKey TurnRightKey { get; init; } = ConsoleKey.RightArrow; // 39
+    public ConsoleKey ForwardKey { get; init; } = ConsoleKey.UpArrow;
+    public ConsoleKey BackwardKey { get; init; } = ConsoleKey.DownArrow;
+    public ConsoleKey TurnLeftKey { get; init; } = ConsoleKey.LeftArrow;
+    public ConsoleKey TurnRightKey { get; init; } = ConsoleKey.RightArrow;
 
     public void Initialise(IServiceProvider sp, string? overridePathFile)
     {
-        Jump.Key = JumpKey;
-        Jump.Name = nameof(Jump);
-        Jump.BaseAction = true;
-
-        TargetLastTarget.Key = TargetLastTargetKey;
-        TargetLastTarget.Name = nameof(TargetLastTarget);
-        TargetLastTarget.Cooldown = 0;
-        TargetLastTarget.BaseAction = true;
-
-        StandUp.Key = StandUpKey;
-        StandUp.Name = nameof(StandUp);
-        StandUp.Cooldown = 0;
-        StandUp.BaseAction = true;
-
-        ClearTarget.Key = ClearTargetKey;
-        ClearTarget.Name = nameof(ClearTarget);
-        ClearTarget.Cooldown = 0;
-        ClearTarget.BaseAction = true;
-
-        StopAttack.Key = StopAttackKey;
-        StopAttack.Name = nameof(StopAttack);
-        StopAttack.PressDuration = 20;
-        StopAttack.BaseAction = true;
-
-        TargetNearestTarget.Key = TargetNearestTargetKey;
-        TargetNearestTarget.Name = nameof(TargetNearestTarget);
-        TargetNearestTarget.BaseAction = true;
-
-        TargetPet.Key = TargetPetKey;
-        TargetPet.Name = nameof(TargetPet);
-        TargetPet.Cooldown = 0;
-        TargetPet.BaseAction = true;
-
-        TargetTargetOfTarget.Key = TargetTargetOfTargetKey;
-        TargetTargetOfTarget.Name = nameof(TargetTargetOfTarget);
-        TargetTargetOfTarget.Cooldown = 0;
-        TargetTargetOfTarget.BaseAction = true;
-
-        TargetFocus.Key = TargetFocusKey;
-        TargetFocus.Name = nameof(TargetFocus);
-        TargetFocus.Cooldown = 0;
-        TargetFocus.BaseAction = true;
-
-        FollowTarget.Key = FollowTargetKey;
-        FollowTarget.Name = nameof(FollowTarget);
-        FollowTarget.Cooldown = 0;
-        FollowTarget.BaseAction = true;
-
-        PetAttack.Key = PetAttackKey;
-        PetAttack.Name = nameof(PetAttack);
-        PetAttack.PressDuration = 10;
-        PetAttack.BaseAction = true;
-
-        Mount.Key = MountKey;
-        Mount.Name = nameof(Mount);
-        Mount.BaseAction = true;
-        Mount.Cooldown = 6000;
-
-        Interact.Key = InteractKey;
-        Interact.Name = nameof(Interact);
-        Interact.Cooldown = 0;
-        Interact.PressDuration = 30;
-        Interact.BaseAction = true;
-
-        InteractMouseOver.Key = InteractMouseOverKey;
-        InteractMouseOver.Name = nameof(InteractMouseOver);
-        InteractMouseOver.Cooldown = 0;
-        InteractMouseOver.PressDuration = 10;
-        InteractMouseOver.BaseAction = true;
-
-        Approach.Key = InteractKey;
-        Approach.Name = nameof(Approach);
-        Approach.PressDuration = 10;
-        Approach.BaseAction = true;
-
-        AutoAttack.Key = InteractKey;
-        AutoAttack.Name = nameof(AutoAttack);
-        AutoAttack.BaseAction = true;
+        Approach.Key = Interact.Key;
+        AutoAttack.Key = Interact.Key;
 
         RequirementFactory factory = new(sp, this);
 

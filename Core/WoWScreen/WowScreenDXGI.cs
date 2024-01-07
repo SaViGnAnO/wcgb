@@ -10,6 +10,7 @@ using SixLabors.ImageSharp.PixelFormats;
 
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 using Vortice.Direct3D;
@@ -71,7 +72,7 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
 
     // IAddonDataProvider
 
-    private Rectangle addonRect;
+    private Size addonSize;
     private DataFrame[] frames = null!;
     private Image<Bgra32> addonImage = null!;
 
@@ -181,24 +182,24 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
         this.frames = frames;
         Data = new int[frames.Length];
 
-        addonRect = new();
+        addonSize = new();
         for (int i = 0; i < frames.Length; i++)
         {
-            addonRect.Width = Math.Max(addonRect.Width, frames[i].X);
-            addonRect.Height = Math.Max(addonRect.Height, frames[i].Y);
+            addonSize.Width = Math.Max(addonSize.Width, frames[i].X);
+            addonSize.Height = Math.Max(addonSize.Height, frames[i].Y);
         }
-        addonRect.Width++;
-        addonRect.Height++;
+        addonSize.Width++;
+        addonSize.Height++;
 
-        addonImage = new(ContiguousJpegConfiguration, addonRect.Right, addonRect.Bottom);
+        addonImage = new(ContiguousJpegConfiguration, addonSize.Width, addonSize.Height);
 
         Texture2DDescription addonTextureDesc = new()
         {
             CPUAccessFlags = CpuAccessFlags.Read,
             BindFlags = BindFlags.None,
             Format = Format.B8G8R8A8_UNorm,
-            Width = addonRect.Right,
-            Height = addonRect.Bottom,
+            Width = addonSize.Width,
+            Height = addonSize.Height,
             MiscFlags = ResourceOptionFlags.None,
             MipLevels = 1,
             ArraySize = 1,
@@ -209,7 +210,7 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
         addonTexture?.Dispose();
         addonTexture = device.CreateTexture2D(addonTextureDesc);
 
-        logger.LogDebug($"DataFrames {frames.Length} - Texture: {addonRect.Width}x{addonRect.Height}");
+        logger.LogDebug($"DataFrames {frames.Length} - Texture: {addonSize}");
     }
 
     [SkipLocalsInit]
@@ -261,28 +262,30 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
     [SkipLocalsInit]
     private void UpdateAddonImage(ID3D11Texture2D texture)
     {
-        Box box = new(screenRect.X, screenRect.Y, 0, screenRect.X + addonRect.Right, screenRect.Y + addonRect.Bottom, 1);
-        device.ImmediateContext.CopySubresourceRegion(addonTexture, 0, 0, 0, 0, texture, 0, box);
+        if (!addonImage.DangerousTryGetSinglePixelMemory(out Memory<Bgra32> memory))
+            return;
 
-        MappedSubresource resource =
-            device.ImmediateContext.Map(addonTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        Box areaOnScreen = new(
+            screenRect.X, screenRect.Y, 0,
+            screenRect.X + addonSize.Width,
+            screenRect.Y + addonSize.Height, 1);
 
-        int width = addonRect.Width;
-        int bytesToCopy = width * Bgra32Size;
-        nint dataPointer = resource.DataPointer;
+        device.ImmediateContext
+            .CopySubresourceRegion(addonTexture, 0, 0, 0, 0, texture, 0, areaOnScreen);
+
+        MappedSubresource resource = device.ImmediateContext
+            .Map(addonTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+
         int rowPitch = resource.RowPitch;
+        ReadOnlySpan<byte> src = resource.AsSpan(addonSize.Height * rowPitch);
+        Span<byte> dest = MemoryMarshal.Cast<Bgra32, byte>(memory.Span);
 
-        if (addonImage.DangerousTryGetSinglePixelMemory(out Memory<Bgra32> memory) && memory.Length > 1)
+        int bytesToCopy = addonSize.Width * Bgra32Size;
+        for (int y = 0; y < addonSize.Height; y++)
         {
-            unsafe
-            {
-                for (int y = 0; y < addonRect.Height; y++)
-                {
-                    ReadOnlySpan<byte> src = new((dataPointer + (y * rowPitch)).ToPointer(), bytesToCopy);
-                    var dest = memory.Span.Slice(y * width, width).GetPointerUnsafe();
-                    MemoryHelpers.CopyMemory(dest, src);
-                }
-            }
+            ReadOnlySpan<byte> srcRow = src.Slice(y * rowPitch, bytesToCopy);
+            Span<byte> destRow = dest.Slice(y * bytesToCopy, bytesToCopy);
+            srcRow.TryCopyTo(destRow);
         }
 
         device.ImmediateContext.Unmap(addonTexture, 0);
@@ -291,69 +294,70 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
     [SkipLocalsInit]
     private void UpdateScreenImage(ID3D11Texture2D texture)
     {
-        Box box = new(screenRect.X, screenRect.Y, 0, screenRect.Right, screenRect.Bottom, 1);
-        device.ImmediateContext.CopySubresourceRegion(screenTexture, 0, 0, 0, 0, texture, 0, box);
+        if (!ScreenImage.DangerousTryGetSinglePixelMemory(out Memory<Bgra32> memory))
+            return;
 
-        MappedSubresource resource = device.ImmediateContext.Map(screenTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        Box areaOnScreen = new(
+            screenRect.X, screenRect.Y, 0,
+            screenRect.Right, screenRect.Bottom, 1);
 
-        int width = screenRect.Width;
-        int bytesToCopy = width * Bgra32Size;
-        nint dataPointer = resource.DataPointer;
+        device.ImmediateContext
+            .CopySubresourceRegion(screenTexture, 0, 0, 0, 0, texture, 0, areaOnScreen);
+
+        MappedSubresource resource = device.ImmediateContext
+            .Map(screenTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+
         int rowPitch = resource.RowPitch;
+        ReadOnlySpan<byte> src = resource.AsSpan(screenRect.Height * rowPitch);
+        Span<byte> dest = MemoryMarshal.Cast<Bgra32, byte>(memory.Span);
 
-        if (ScreenImage.DangerousTryGetSinglePixelMemory(out Memory<Bgra32> memory))
+        if (!windowedMode)
         {
-            if (!windowedMode)
+            src.TryCopyTo(dest);
+        }
+        else
+        {
+            int bytesToCopy = screenRect.Width * Bgra32Size;
+            for (int y = 0; y < screenRect.Height; y++)
             {
-                unsafe
-                {
-                    ReadOnlySpan<byte> src
-                        = new(dataPointer.ToPointer(), screenRect.Height * bytesToCopy);
-                    MemoryHelpers.CopyMemory(memory.Span.GetPointerUnsafe(), src);
-                }
-            }
-            else
-            {
-                unsafe
-                {
-                    for (int y = 0; y < screenRect.Height; y++)
-                    {
-                        ReadOnlySpan<byte> src = new((dataPointer + (y * rowPitch)).ToPointer(), bytesToCopy);
-                        var dest = memory.Span.Slice(y * width, width).GetPointerUnsafe();
-                        MemoryHelpers.CopyMemory(dest, src);
-                    }
-                }
+                ReadOnlySpan<byte> srcRow = src.Slice(y * rowPitch, bytesToCopy);
+                Span<byte> destRow = dest.Slice(y * bytesToCopy, bytesToCopy);
+                srcRow.TryCopyTo(destRow);
             }
         }
+
+        device.ImmediateContext.Unmap(screenTexture, 0);
     }
 
     [SkipLocalsInit]
     private void UpdateMinimapImage(ID3D11Texture2D texture)
     {
-        Box box = new(screenRect.Right - MiniMapSize, screenRect.Y, 0, screenRect.Right, screenRect.Top + MiniMapRect.Bottom, 1);
-        device.ImmediateContext.CopySubresourceRegion(minimapTexture, 0, 0, 0, 0, texture, 0, box);
+        if (!MiniMapImage.DangerousTryGetSinglePixelMemory(out Memory<Bgra32> memory))
+            return;
 
-        MappedSubresource resource = device.ImmediateContext.Map(minimapTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        Box areaOnScreen = new(
+            screenRect.Right - MiniMapSize, screenRect.Y, 0,
+            screenRect.Right, screenRect.Top + MiniMapRect.Bottom, 1);
 
-        if (MiniMapImage.DangerousTryGetSinglePixelMemory(out Memory<Bgra32> memory))
+        device.ImmediateContext
+            .CopySubresourceRegion(minimapTexture, 0, 0, 0, 0, texture, 0, areaOnScreen);
+
+        MappedSubresource resource = device.ImmediateContext
+            .Map(minimapTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+
+        int rowPitch = resource.RowPitch;
+        ReadOnlySpan<byte> src = resource.AsSpan(MiniMapRect.Height * rowPitch);
+        Span<byte> dest = MemoryMarshal.Cast<Bgra32, byte>(memory.Span);
+
+        int bytesToCopy = MiniMapRect.Width * Bgra32Size;
+        for (int y = 0; y < MiniMapRect.Height; y++)
         {
-            int width = MiniMapRect.Width;
-            int bytesToCopy = width * Bgra32Size;
-            nint dataPointer = resource.DataPointer;
-            int rowPitch = resource.RowPitch;
-
-            unsafe
-            {
-                for (int y = 0; y < MiniMapRect.Height; y++)
-                {
-                    ReadOnlySpan<byte> src = new((dataPointer + (y * rowPitch)).ToPointer(), bytesToCopy);
-                    var dest = memory.Span.Slice(y * width, width).GetPointerUnsafe();
-                    MemoryHelpers.CopyMemory(dest, src);
-                }
-            }
+            ReadOnlySpan<byte> srcRow = src.Slice(y * rowPitch, bytesToCopy);
+            Span<byte> destRow = dest.Slice(y * bytesToCopy, bytesToCopy);
+            srcRow.TryCopyTo(destRow);
         }
 
-        device.ImmediateContext.Unmap(screenTexture, 0);
+        device.ImmediateContext.Unmap(minimapTexture, 0);
     }
 
     public void UpdateData()

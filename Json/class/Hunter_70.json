@@ -10,7 +10,7 @@
   "PathReduceSteps": true,
   "NPCMaxLevels_Above": 2,
   "NPCMaxLevels_Below": 12,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "PathFilename": "_pack\\60-70\\Zangarmarsh\\60-64 Dead mire.json",
   "IntVariables": {
     "MIN_MANA_VIPER%": 40,

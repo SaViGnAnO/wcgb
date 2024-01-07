@@ -7,14 +7,16 @@
   "PathThereAndBack": false,
   "PathReduceSteps": false,
   "NPCMaxLevels_Above": 2,
-  "NPCMaxLevels_Below": 12,
-  "MountKey": "N0",
-  "PathFileName": "_pack\\60-70\\Zangarmarsh\\60-64 Dead mire.json",
+  "NPCMaxLevels_Below": 22,
+  "Mount": { "Key": "N0"},
+  //"PathFileName": "_pack\\60-70\\Zangarmarsh\\60-64 Dead mire.json",
+  //"PathFilename": "_pack\\60-70\\Terokkar Forest\\62-64.json",
+  "PathFilename": "_pack\\60-70\\Terokkar Forest\\70-Terokkar Forest_Barrier_Hill.json",
   "IntVariables": {
     "MIN_MANA_VIPER%": 40,
     "MIN_MANA_HAWK%": 70,
     "MIN_TARGET_HP_CD%": 75,
-    "USE_TRINKET_1": 0,
+    "USE_TRINKET_1": 1,
     "USE_TRINKET_2": 0
   },
   "Pull": {
@@ -25,16 +27,6 @@
           "Has Pet",
           "MinRange > 20"
         ]
-      },
-      {
-        "Name": "Stop Auto Shot",
-        "Key": "0",
-        "BeforeCastDelay": 25,
-        "BaseAction": true,
-        "Requirements": [
-          "AutoShot"
-        ],
-        "AfterCastDelay": 50
       }
     ]
   },
@@ -72,7 +64,7 @@
       {
         "Name": "Bestial Wrath",
         "Key": "N2",
-        "WhenUsable": true,
+        "BaseAction": true,
         "Requirements": [
           "Spell:Bestial Wrath",
           "!InMeleeRange",
@@ -87,7 +79,7 @@
         "Name": "Trinket 1",
         "Key": "F1",
         "Item": true,
-        "WhenUsable": true,
+        "BaseAction": true,
         "Requirements": [
           "USE_TRINKET_1 == 1",
           "!InMeleeRange",
@@ -102,7 +94,7 @@
         "Name": "Trinket 2",
         "Key": "F2",
         "Item": true,
-        "WhenUsable": true,
+        "BaseAction": true,
         "Requirements": [
           "USE_TRINKET_2 == 1",
           "!InMeleeRange",
@@ -116,7 +108,7 @@
       {
         "Name": "Rapid Fire",
         "Key": "N3",
-        "WhenUsable": true,
+        "BaseAction": true,
         "Requirements": [
           "!InMeleeRange",
           "HasRangedWeapon",
@@ -134,9 +126,6 @@
       {
         "Name": "Auto Shot",
         "Key": "0",
-        "Item": true,
-        "StopBeforeCast": true,
-        "AfterCastAuraExpected": true,
         "Requirements": [
           "!InMeleeRange",
           "HasRangedWeapon && HasAmmo",
@@ -233,6 +222,7 @@
         "Key": "7",
         "InCombat": "i dont care",
         "Requirements": [
+          "!Mounted",
           "!Aspect of the Viper",
           "Mana% < MIN_MANA_VIPER%"
         ]
@@ -243,6 +233,7 @@
         "Key": "5",
         "InCombat": "i dont care",
         "Requirements": [
+          "!Mounted",
           "!Aspect of the Hawk",
           "Mana% > MIN_MANA_HAWK%"
         ]
@@ -254,7 +245,8 @@
         "Cooldown": 20000,
         "Requirements": [
           "Has Pet",
-          "!Pet Happy"
+          "!Pet Happy",
+          "!Mounted"
         ]
       },
       {

@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 
 using Core;
 
@@ -26,7 +27,8 @@ internal sealed class Test_MinimapNodeFinder
 
     private readonly Stopwatch stopwatch;
 
-    public Test_MinimapNodeFinder(ILogger logger, IWowScreen screen)
+    public Test_MinimapNodeFinder(ILogger logger,
+        IWowScreen screen, EventHandler<MinimapNodeEventArgs>? NodeEvent)
     {
         this.logger = logger;
         this.screen = screen;
@@ -34,6 +36,8 @@ internal sealed class Test_MinimapNodeFinder
         stopwatch = new();
 
         minimapNodeFinder = new(logger, screen);
+
+        minimapNodeFinder.NodeEvent += NodeEvent;
     }
 
     public void Execute()

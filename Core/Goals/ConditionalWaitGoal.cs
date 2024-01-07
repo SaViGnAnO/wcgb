@@ -16,7 +16,7 @@ public sealed class ConditionalWaitGoal : GoapGoal
         this.logger = logger;
         this.wait = wait;
 
-        Keys = new KeyAction[1] { keyAction };
+        Keys = [keyAction];
     }
 
     public override bool CanRun() => Keys[0].CanRun();

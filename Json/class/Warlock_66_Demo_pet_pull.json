@@ -3,7 +3,7 @@
   "Loot": true,
   //"Mode": "AttendedGrind", //Grind
   "UseMount": true,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "PathReduceSteps": true,
   "PathThereAndBack": true,
   "NPCMaxLevels_Above": 2,

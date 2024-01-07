@@ -1,22 +1,31 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections.Frozen;
+using System.Collections.Generic;
+using System;
+
+using SharedLib;
+
 using static System.IO.File;
 using static System.IO.Path;
 using static Newtonsoft.Json.JsonConvert;
-using SharedLib;
-using System;
 
 namespace Core.Database;
 
 public sealed class SpellDB
 {
-    public Dictionary<int, Spell> Spells { get; } = new();
+    public FrozenDictionary<int, Spell> Spells { get; }
 
     public SpellDB(DataConfig dataConfig)
     {
-        ReadOnlySpan<Spell> temp = DeserializeObject<Spell[]>(ReadAllText(Join(dataConfig.ExpDbc, "spells.json")))!;
-        for (int i = 0; i < temp.Length; i++)
+        ReadOnlySpan<Spell> span = DeserializeObject<Spell[]>(
+            ReadAllText(Join(dataConfig.ExpDbc, "spells.json")))!;
+
+        Dictionary<int, Spell> spells = [];
+
+        for (int i = 0; i < span.Length; i++)
         {
-            Spells.Add(temp[i].Id, temp[i]);
+            spells.Add(span[i].Id, span[i]);
         }
+
+        this.Spells = spells.ToFrozenDictionary();
     }
 }

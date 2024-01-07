@@ -2,7 +2,7 @@
   "ClassName": "Paladin",
   "PathFilename": "_p2\\25-30_hillsbrad.json",
   "UseMount": false,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "PathThereAndBack": false,
   "IntVariables": {
     "MIN_SPEED_SEAL": 3000,

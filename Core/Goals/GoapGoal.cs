@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 
 namespace Core.Goals;
 
-public abstract class GoapGoal
+public abstract partial class GoapGoal
 {
     public Dictionary<GoapKey, bool> Preconditions { get; } = new();
     public Dictionary<GoapKey, bool> Effects { get; } = new();
@@ -33,7 +33,7 @@ public abstract class GoapGoal
 
     protected GoapGoal(string name)
     {
-        string output = Regex.Replace(name.Replace("Goal", ""), @"\p{Lu}", m => " " + m.Value.ToUpperInvariant());
+        string output = RegexGoalName().Replace(name.Replace("Goal", ""), m => " " + m.Value.ToUpperInvariant());
         DisplayName = Name = string.Concat(output[0].ToString().ToUpper(), output.AsSpan(1));
     }
 
@@ -58,4 +58,7 @@ public abstract class GoapGoal
     {
         Effects[key] = value;
     }
+
+    [GeneratedRegex(@"\p{Lu}")]
+    private static partial Regex RegexGoalName();
 }

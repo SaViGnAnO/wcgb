@@ -1,6 +1,6 @@
 ﻿namespace SharedLib;
 
-public readonly struct WorldMapArea
+public readonly record struct WorldMapArea
 {
     public int MapID { get; init; }
     public int AreaID { get; init; }

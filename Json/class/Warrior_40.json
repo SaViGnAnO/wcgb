@@ -5,7 +5,7 @@
   "NPCMaxLevels_Below": 10,
   "PathThereAndBack": false,
   "PathReduceSteps": true,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "IntVariables": {
     "CD_MIN_TARGET_HP%": 70,
     "MIN_RAGE_HEROIC_STRIKE": 42

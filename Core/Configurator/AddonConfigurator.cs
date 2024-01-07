@@ -8,7 +8,7 @@ using Core.Extensions;
 
 namespace Core;
 
-public sealed class AddonConfigurator
+public sealed partial class AddonConfigurator
 {
     private readonly ILogger<AddonConfigurator> logger;
     private readonly WowProcess process;
@@ -56,7 +56,7 @@ public sealed class AddonConfigurator
             // this will appear in the lua code so
             // special character not allowed
             // also numbers not allowed
-            Config.Title = Regex.Replace(Config.Title, @"[^\u0000-\u007F]+", string.Empty);
+            Config.Title = RegexTitle().Replace(Config.Title, string.Empty);
             Config.Title = new string(Config.Title.Where(char.IsLetter).ToArray());
             Config.Title =
                 Config.Title.Trim()
@@ -197,7 +197,7 @@ public sealed class AddonConfigurator
             .Replace("dc", Config.Command)
             .Replace("DC", Config.Command);
 
-        Regex cellSizeRegex = new(@"^local CELL_SIZE = (?<SIZE>[0-9]+)", RegexOptions.Multiline);
+        Regex cellSizeRegex = RegexCellSize();
         text = text.Replace(cellSizeRegex, "SIZE", Config.CellSize);
 
         File.WriteAllText(mainLuaPath, text);
@@ -313,7 +313,7 @@ public sealed class AddonConfigurator
             return null;
 
         string begin = "## Version: ";
-        var line = File
+        string? line = File
             .ReadLines(tocPath)
             .SkipWhile(line => !line.StartsWith(begin))
             .FirstOrDefault();
@@ -321,4 +321,10 @@ public sealed class AddonConfigurator
         string? versionStr = line?.Split(begin)[1];
         return Version.TryParse(versionStr, out Version? version) ? version : null;
     }
+
+    [GeneratedRegex(@"[^\u0000-\u007F]+")]
+    private static partial Regex RegexTitle();
+
+    [GeneratedRegex(@"^local CELL_SIZE = (?<SIZE>[0-9]+)", RegexOptions.Multiline)]
+    private static partial Regex RegexCellSize();
 }

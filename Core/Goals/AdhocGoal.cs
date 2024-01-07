@@ -46,7 +46,7 @@ public sealed class AdhocGoal : GoapGoal
             combatMatters = result;
         }
 
-        Keys = new KeyAction[1] { key };
+        Keys = [key];
     }
 
     public override bool CanRun() => key.CanRun();

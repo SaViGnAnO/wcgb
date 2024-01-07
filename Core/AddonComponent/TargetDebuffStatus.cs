@@ -21,7 +21,7 @@ public sealed class TargetDebuffStatus : IReader
     }
 
     // Priest
-    [Names(new[] { "Shadow Word: Pain" })]
+    [Names(["Shadow Word: Pain"])]
     public bool Shadow_Word_Pain() => v[Mask._0];
 
     // Druid
@@ -53,13 +53,13 @@ public sealed class TargetDebuffStatus : IReader
     public bool Charge_Stun() => v[Mask._3];
 
     // Warlock
-    [Names(new[] {
+    [Names([
         "Curse of Weakness",
         "Curse of Elements",
         "Curse of Recklessness",
         "Curse of Shadow",
         "Curse of Agony",
-        "Curse of" })]
+        "Curse of"])]
     public bool Curse_of() => v[Mask._0];
     public bool Corruption() => v[Mask._1];
     public bool Immolate() => v[Mask._2];
@@ -67,7 +67,7 @@ public sealed class TargetDebuffStatus : IReader
 
     // Hunter
     public bool Serpent_Sting() => v[Mask._0];
-    [Names(new[] { "Hunter's Mark" })]
+    [Names(["Hunter's Mark"])]
     public bool Hunters_Mark() => v[Mask._1];
     public bool Viper_Sting() => v[Mask._2];
     public bool Explosive_Shot() => v[Mask._3];

@@ -344,8 +344,6 @@ public static class DependencyInjection
                     $"{scp.hostv1}:{scp.portv1}");
                 return api;
             }
-
-            failed = true;
         }
 
         if (scp.Type != StartupConfigPathing.Types.Local)

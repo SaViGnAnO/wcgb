@@ -1,9 +1,12 @@
-﻿using System;
+﻿using Core.Talents;
+
+using System;
+
+using SharedLib;
+
 using static System.IO.File;
 using static System.IO.Path;
 using static Newtonsoft.Json.JsonConvert;
-using Core.Talents;
-using SharedLib;
 
 namespace Core.Database;
 
@@ -18,8 +21,11 @@ public sealed class TalentDB
     {
         this.spellDB = spellDB;
 
-        talentTabs = DeserializeObject<TalentTab[]>(ReadAllText(Join(dataConfig.ExpDbc, "talenttab.json")))!;
-        talentTreeElements = DeserializeObject<TalentTreeElement[]>(ReadAllText(Join(dataConfig.ExpDbc, "talent.json")))!;
+        talentTabs = DeserializeObject<TalentTab[]>(
+            ReadAllText(Join(dataConfig.ExpDbc, "talenttab.json")))!;
+
+        talentTreeElements = DeserializeObject<TalentTreeElement[]>(
+            ReadAllText(Join(dataConfig.ExpDbc, "talent.json")))!;
     }
 
     public bool Update(ref Talent talent, UnitClass @class, out int spellId)

@@ -1,11 +1,8 @@
-﻿using System.Collections.Generic;
+﻿namespace ReadDBC_CSV;
 
-namespace ReadDBC_CSV
+public interface IExtractor
 {
-    public interface IExtractor
-    {
-        public List<string> FileRequirement { get; }
+    public string[] FileRequirement { get; }
 
-        void Run();
-    }
+    void Run();
 }

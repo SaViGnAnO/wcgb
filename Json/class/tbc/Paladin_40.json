@@ -4,7 +4,7 @@
   //"PathFilename": "_pack\\30-40\\Alterac Mountains\\32-36 Yettis-Ogers.json",
   "PathFilename": "_pack\\30-40\\Swamp of Sorrows\\38-42 Misty Valley.json",
   "UseMount": false,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "PathThereAndBack": false,
   "PathReduceSteps": true,
   "IntVariables": {

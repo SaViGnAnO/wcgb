@@ -28,6 +28,7 @@ using PPather.Triangles.Data;
 using static Wmo.MapTileFile;
 using PPather;
 using System.Runtime.CompilerServices;
+using System.Collections.Generic;
 
 namespace WowTriangles;
 
@@ -99,17 +100,9 @@ public sealed class MPQTriangleSupplier
         }
 
         // Map Tile - World objects
-        SparseMatrix3D<WMO> instances = new();
         for (int i = 0; i < mapTile.wmois.Length; i++)
         {
             WMOInstance wi = mapTile.wmois[i];
-            // TODO: check if this ever get hit
-            if (instances.ContainsKey((int)wi.pos.X, (int)wi.pos.Y, (int)wi.pos.Z))
-            {
-                continue;
-            }
-
-            instances.Add((int)wi.pos.X, (int)wi.pos.Y, (int)wi.pos.Z, wi.wmo);
             AddTriangles(triangles, wi);
         }
 

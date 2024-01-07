@@ -2,17 +2,17 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net7.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CsvHelper" Version="27.2.1" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.2" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Sep" Version="0.3.0" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="SharedLib">
-      <HintPath>..\..\SharedLib\bin\Release\net7.0\SharedLib.dll</HintPath>
+      <HintPath>..\..\SharedLib\bin\Release\net8.0\SharedLib.dll</HintPath>
     </Reference>
   </ItemGroup>
 

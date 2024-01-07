@@ -43,7 +43,7 @@ public sealed class BuffStatus<T> : IReader
     public bool Mark_of_the_Wild() => v[Mask._10];
     public bool Thorns() => v[Mask._11];
 
-    [Names(new[] { "Tiger's Fury" })]
+    [Names(["Tiger's Fury"])]
     public bool Tigers_Fury() => v[Mask._12];
     public bool Prowl() => v[Mask._13];
     public bool Rejuvenation() => v[Mask._14];
@@ -74,11 +74,11 @@ public sealed class BuffStatus<T> : IReader
     public bool Divine_Shield() => v[Mask._23];
 
     // Mage
-    [Names(new[] {
+    [Names([
         "Frost Armor",
         "Ice Armor",
         "Molten Armor",
-        "Mage Armor" })]
+        "Mage Armor"])]
     public bool Frost_Armor() => v[Mask._10];
     public bool Arcane_Intellect() => v[Mask._11];
     public bool Ice_Barrier() => v[Mask._12];
@@ -97,9 +97,9 @@ public sealed class BuffStatus<T> : IReader
     public bool Bloodrage() => v[Mask._11];
 
     // Warlock
-    [Names(new[] {
+    [Names([
         "Demon Skin",
-        "Demon Armor" })]
+        "Demon Armor"])]
     public bool Demon_Skin() => v[Mask._10]; //Skin and Armor
     public bool Soul_Link() => v[Mask._11];
     public bool Soulstone_Resurrection() => v[Mask._12];
@@ -112,9 +112,9 @@ public sealed class BuffStatus<T> : IReader
     // Shaman
     public bool Lightning_Shield() => v[Mask._10];
     public bool Water_Shield() => v[Mask._11];
-    [Names(new[] {
+    [Names([
         "Shamanistic Focus",
-        "Focused" })]
+        "Focused"])]
     public bool Shamanistic_Focus() => v[Mask._12];
     public bool Stoneskin() => v[Mask._13];
 
@@ -135,7 +135,7 @@ public sealed class BuffStatus<T> : IReader
     public bool Horn_of_Winter() => v[Mask._11];
     public bool Icebound_Fortitude() => v[Mask._12];
     public bool Path_of_Frost() => v[Mask._13];
-    [Names(new[] { "Anti-Magic Shell" })]
+    [Names(["Anti-Magic Shell"])]
     public bool Anti_Magic_Shell() => v[Mask._14];
     public bool Army_of_the_Dead() => v[Mask._15];
     public bool Vampiric_Blood() => v[Mask._16];

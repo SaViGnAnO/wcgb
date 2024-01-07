@@ -1,6 +1,6 @@
 ﻿namespace SharedLib;
 
-public readonly struct Item
+public readonly record struct Item
 {
     public int Entry { get; init; }
     public string Name { get; init; }

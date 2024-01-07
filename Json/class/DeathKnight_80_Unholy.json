@@ -6,7 +6,7 @@
   "PathFilename": "_pack\\70-80\\Zul'Drak\\76-80_Zul'Drak_Heb'Valok_spiders.json",
   "PathReduceSteps": true,
   "PathThereAndBack": false,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "IntVariables": {
     "MIN_HP_FOOD%": 40,
     "MIN_RUNE_TO_DUMP": 40,

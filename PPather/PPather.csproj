@@ -1,14 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net7.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <Platforms>AnyCPU;x64;x86</Platforms>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="CommunityToolkit.HighPerformance" Version="8.2.1" />
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DataConfig\DataConfig.csproj" />

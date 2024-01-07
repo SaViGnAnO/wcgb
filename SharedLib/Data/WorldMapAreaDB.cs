@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -10,19 +11,22 @@ namespace SharedLib;
 
 public sealed class WorldMapAreaDB
 {
-    private readonly Dictionary<int, WorldMapArea> wmas = new();
+    private readonly FrozenDictionary<int, WorldMapArea> wmas;
 
     public IEnumerable<WorldMapArea> Values => wmas.Values;
 
     public WorldMapAreaDB(DataConfig dataConfig)
     {
-        ReadOnlySpan<WorldMapArea> wmas =
+        ReadOnlySpan<WorldMapArea> span =
             JsonConvert.DeserializeObject<WorldMapArea[]>(
                 File.ReadAllText(
                     Path.Join(dataConfig.ExpDbc, "WorldMapArea.json")));
 
-        for (int i = 0; i < wmas.Length; i++)
-            this.wmas.Add(wmas[i].UIMapId, wmas[i]);
+        Dictionary<int, WorldMapArea> wmas = [];
+        for (int i = 0; i < span.Length; i++)
+            wmas.Add(span[i].UIMapId, span[i]);
+
+        this.wmas = wmas.ToFrozenDictionary();
     }
 
     public int GetAreaId(int uiMap)

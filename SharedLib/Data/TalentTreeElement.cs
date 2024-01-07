@@ -1,6 +1,6 @@
 ﻿namespace SharedLib;
 
-public readonly struct TalentTreeElement
+public readonly record struct TalentTreeElement
 {
     public int TierID { get; init; }
     public int ColumnIndex { get; init; }

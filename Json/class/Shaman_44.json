@@ -7,7 +7,7 @@
   "PathReduceSteps": true,
   "NPCMaxLevels_Below": 7,
   "NPCMaxLevels_Above": 2,
-  "MountKey": "N1",
+  "Mount": { "Key": "N1"},
   "Pull": {
     "Sequence": [
       {

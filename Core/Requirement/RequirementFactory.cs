@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -40,19 +41,19 @@ public sealed partial class RequirementFactory
     private readonly ActionBarCooldownReader cooldownReader;
     private readonly ActionBarCostReader costReader;
 
-    private readonly Dictionary<int, SchoolMask> npcSchoolImmunity;
+    private readonly FrozenDictionary<int, SchoolMask> npcSchoolImmunity;
 
-    private readonly string[] negateKeywords = new string[2]
-    {
+    private readonly string[] negateKeywords =
+    [
         "not ",
         SymbolNegate
-    };
+    ];
 
     private readonly Dictionary<string, Func<int>> intVariables;
 
-    private readonly Dictionary<string, Func<bool>> boolVariables;
+    private readonly FrozenDictionary<string, Func<bool>> boolVariables;
 
-    private readonly Dictionary<string, Func<string, Requirement>> requirementMap;
+    private readonly FrozenDictionary<string, Func<string, Requirement>> requirementMap;
 
     private const char SEP1 = ':';
     private const char SEP2 = ',';
@@ -95,7 +96,7 @@ public sealed partial class RequirementFactory
 
         this.classConfig = classConfig;
 
-        this.npcSchoolImmunity = classConfig.NpcSchoolImmunity;
+        this.npcSchoolImmunity = classConfig.NpcSchoolImmunity.ToFrozenDictionary();
 
         NpcNameFinder npcNameFinder = sp.GetRequiredService<NpcNameFinder>();
         AddonBits bits = sp.GetRequiredService<AddonBits>();
@@ -110,7 +111,7 @@ public sealed partial class RequirementFactory
         var targetBuff = sp.GetRequiredService<AuraTimeReader<ITargetBuffTimeReader>>();
         var focusBuff = sp.GetRequiredService<AuraTimeReader<IFocusBuffTimeReader>>();
 
-        requirementMap = new()
+        Dictionary<string, Func<string, Requirement>> requirementMap = new()
         {
             { greaterThenOrEqual, CreateGreaterOrEquals },
             { lessThenOrEqual, CreateLesserOrEquals },
@@ -129,8 +130,9 @@ public sealed partial class RequirementFactory
             { "Trigger:", CreateTrigger },
             { "Usable:", CreateUsable }
         };
+        this.requirementMap = requirementMap.ToFrozenDictionary();
 
-        boolVariables = new(StringComparer.InvariantCultureIgnoreCase)
+        Dictionary<string, Func<bool>> boolVariables = new(StringComparer.InvariantCultureIgnoreCase)
         {
             // Target Based
             { "TargetYieldXP", bits.Target_NotTrivial },
@@ -185,6 +187,8 @@ public sealed partial class RequirementFactory
         AddAura("", boolVariables, playerBuffs);
         AddAura("F_", boolVariables, focusBuffs);
         AddAura("", boolVariables, targetDebuffs);
+
+        this.boolVariables = boolVariables.ToFrozenDictionary();
 
         intVariables = new Dictionary<string, Func<int>>
         {
@@ -644,7 +648,7 @@ public sealed partial class RequirementFactory
     }
 
     private void AddSpellSchool(List<Requirement> list, KeyAction item,
-        PlayerReader playerReader, Dictionary<int, SchoolMask> npcSchoolImmunity)
+        PlayerReader playerReader, FrozenDictionary<int, SchoolMask> npcSchoolImmunity)
     {
         if (item.School == SchoolMask.None)
             return;
@@ -682,7 +686,7 @@ public sealed partial class RequirementFactory
             return r;
         }
 
-        if (!boolVariables.ContainsKey(requirement))
+        if (!boolVariables.TryGetValue(requirement, out Func<bool>? value))
         {
             LogUnknown(logger, requirement, string.Join(", ", boolVariables.Keys));
             return new Requirement
@@ -694,7 +698,7 @@ public sealed partial class RequirementFactory
         string s() => requirement;
         Requirement req = new()
         {
-            HasRequirement = boolVariables[requirement],
+            HasRequirement = value,
             LogMessage = s
         };
 

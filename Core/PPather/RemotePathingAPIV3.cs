@@ -36,23 +36,23 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
     };
 
     private readonly ILogger<RemotePathingAPIV3> logger;
-    private readonly WorldMapAreaDB worldMapAreaDB;
+    private readonly WorldMapAreaDB areaDB;
 
-    private readonly AnTcpClient Client;
-    private readonly Thread ConnectionWatchdog;
+    private readonly AnTcpClient client;
+    private readonly Thread connectionWatchdog;
     private readonly CancellationTokenSource cts;
 
     public RemotePathingAPIV3(ILogger<RemotePathingAPIV3> logger,
-        string ip, int port, WorldMapAreaDB worldMapAreaDB)
+        string ip, int port, WorldMapAreaDB areaDB)
     {
         this.logger = logger;
-        this.worldMapAreaDB = worldMapAreaDB;
+        this.areaDB = areaDB;
 
         cts = new();
 
-        Client = new AnTcpClient(ip, port);
-        ConnectionWatchdog = new Thread(ObserveConnection);
-        ConnectionWatchdog.Start();
+        client = new AnTcpClient(ip, port);
+        connectionWatchdog = new Thread(ObserveConnection);
+        connectionWatchdog.Start();
     }
 
     public void Dispose()
@@ -74,16 +74,14 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
 
     public Vector3[] FindMapRoute(int uiMap, Vector3 mapFrom, Vector3 mapTo)
     {
-        if (!Client.IsConnected)
-            return Array.Empty<Vector3>();
-
-        if (!worldMapAreaDB.TryGet(uiMap, out WorldMapArea area))
+        if (!client.IsConnected ||
+            !areaDB.TryGet(uiMap, out WorldMapArea area))
             return Array.Empty<Vector3>();
 
         try
         {
-            Vector3 worldFrom = worldMapAreaDB.ToWorld_FlipXY(uiMap, mapFrom);
-            Vector3 worldTo = worldMapAreaDB.ToWorld_FlipXY(uiMap, mapTo);
+            Vector3 worldFrom = areaDB.ToWorld_FlipXY(uiMap, mapFrom);
+            Vector3 worldTo = areaDB.ToWorld_FlipXY(uiMap, mapTo);
 
             // incase haven't asked a pathfinder for a route this value will be 0
             // that case use the highest location
@@ -94,9 +92,9 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
             }
 
             if (debug)
-                LogInformation($"Finding map route from {mapFrom}({worldFrom}) map {uiMap} to {mapTo}({worldTo}) map {uiMap}...");
+                logger.LogDebug($"Finding map route from {mapFrom}({worldFrom}) map {uiMap} to {mapTo}({worldTo}) map {uiMap}...");
 
-            Vector3[] path = Client.Send((byte)EMessageType.PATH,
+            Vector3[] path = client.Send((byte)EMessageType.PATH,
                 (area.MapID, PathRequestFlags.FIND_LOCATION | PathRequestFlags.CATMULLROM,
                 worldFrom.X, worldFrom.Y, worldFrom.Z, worldTo.X, worldTo.Y, worldTo.Z)).AsArray<Vector3>();
 
@@ -106,27 +104,26 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
             for (int i = 0; i < path.Length; i++)
             {
                 if (debug)
-                    LogInformation($"new float[] {{ {path[i].X}f, {path[i].Y}f, {path[i].Z}f }},");
+                    logger.LogDebug($"new float[] {{ {path[i].X}f, {path[i].Y}f, {path[i].Z}f }},");
 
-                path[i] = worldMapAreaDB.ToMap_FlipXY(path[i], area.MapID, uiMap);
+                path[i] = areaDB.ToMap_FlipXY(path[i], area.MapID, uiMap);
             }
 
             return path;
         }
         catch (Exception ex)
         {
-            LogError($"Finding map route from {mapFrom} to {mapTo}", ex);
-            Console.WriteLine(ex);
+            logger.LogError(ex, $"Finding map route from {mapFrom} to {mapTo}");
             return Array.Empty<Vector3>();
         }
     }
 
     public Vector3[] FindWorldRoute(int uiMap, Vector3 worldFrom, Vector3 worldTo)
     {
-        if (!Client.IsConnected)
+        if (!client.IsConnected)
             return Array.Empty<Vector3>();
 
-        if (!worldMapAreaDB.TryGet(uiMap, out WorldMapArea area))
+        if (!areaDB.TryGet(uiMap, out WorldMapArea area))
             return Array.Empty<Vector3>();
 
         try
@@ -140,9 +137,9 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
             }
 
             if (debug)
-                LogInformation($"Finding world route from {worldFrom}({worldFrom}) map {uiMap} to {worldTo}({worldTo}) map {uiMap}...");
+                logger.LogDebug($"Finding world route from {worldFrom}({worldFrom}) map {uiMap} to {worldTo}({worldTo}) map {uiMap}...");
 
-            Vector3[] path = Client.Send((byte)EMessageType.PATH,
+            Vector3[] path = client.Send((byte)EMessageType.PATH,
                 (area.MapID, PathRequestFlags.FIND_LOCATION | PathRequestFlags.CATMULLROM,
                 worldFrom.X, worldFrom.Y, worldFrom.Z, worldTo.X, worldTo.Y, worldTo.Z)).AsArray<Vector3>();
 
@@ -153,8 +150,7 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
         }
         catch (Exception ex)
         {
-            LogError($"Finding world route from {worldFrom} to {worldTo}", ex);
-            Console.WriteLine(ex);
+            logger.LogError(ex, $"Finding world route from {worldFrom} to {worldTo}");
             return Array.Empty<Vector3>();
         }
     }
@@ -167,22 +163,22 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
 
         while (!cts.IsCancellationRequested)
         {
-            if (Client.IsConnected)
+            if (client.IsConnected)
             {
                 break;
             }
             cts.Token.WaitHandle.WaitOne(watchdogPollMs / 10);
         }
 
-        return Client.IsConnected;
+        return client.IsConnected;
     }
 
     private void RequestDisconnect()
     {
         cts.Cancel();
-        if (Client.IsConnected)
+        if (client.IsConnected)
         {
-            Client.Disconnect();
+            client.Disconnect();
         }
     }
 
@@ -192,15 +188,15 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
     {
         while (!cts.IsCancellationRequested)
         {
-            if (!Client.IsConnected)
+            if (!client.IsConnected)
             {
                 try
                 {
-                    Client.Connect();
+                    client.Connect();
                 }
                 catch (Exception ex)
                 {
-                    LogError(ex.Message, ex);
+                    logger.LogError(ex.Message);
                     // ignored, will happen when we cant connect
                 }
             }
@@ -208,18 +204,4 @@ public sealed class RemotePathingAPIV3 : IPPather, IDisposable
             cts.Token.WaitHandle.WaitOne(watchdogPollMs);
         }
     }
-
-    #region Logging
-
-    private void LogError(string text, Exception? ex = null)
-    {
-        logger.LogError(text, ex);
-    }
-
-    private void LogInformation(string text)
-    {
-        logger.LogInformation(text);
-    }
-
-    #endregion
 }

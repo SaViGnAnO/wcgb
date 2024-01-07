@@ -6,7 +6,7 @@
   "PathFilename": "_pack\\60-70\\Terokkar Forest\\62-64.json",
   "PathThereAndBack": true,
   "PathReduceSteps": true,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "IntVariables": {
     "MIN_TARGET_HP%": 20,
     "MIN_HP_BEFORE_HEAL%": 20,

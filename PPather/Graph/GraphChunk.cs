@@ -158,7 +158,7 @@ public sealed class GraphChunk
         {
             long timestamp = Stopwatch.GetTimestamp();
 
-            using Stream stream = File.OpenRead(filePath);
+            using FileStream stream = File.OpenRead(filePath);
             using BinaryReader br = new(stream);
 
             if (br.ReadUInt32() != FILE_MAGIC)
@@ -221,7 +221,7 @@ public sealed class GraphChunk
 
         try
         {
-            using Stream stream = File.Create(filePath);
+            using FileStream stream = File.Create(filePath);
             using BinaryWriter bw = new(stream);
             bw.Write(FILE_MAGIC);
 

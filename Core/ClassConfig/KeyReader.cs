@@ -52,9 +52,9 @@ public static class KeyReader
         { BL + "12", ConsoleKey.F12 },
 
         { "Space", ConsoleKey.Spacebar },
+        { " ", ConsoleKey.Spacebar },
         { "-", ConsoleKey.OemMinus },
         { "=", ConsoleKey.OemPlus },
-        { " ", ConsoleKey.Spacebar },
     };
 
     public static Dictionary<string, int> ActionBarSlotMap { get; } = new()

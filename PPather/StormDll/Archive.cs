@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.IO;
 
@@ -11,7 +12,7 @@ internal sealed class Archive
 
     private readonly IntPtr handle;
 
-    private readonly HashSet<string> fileList = new(StringComparer.InvariantCultureIgnoreCase);
+    private readonly FrozenSet<string> fileList;
 
     private static readonly bool Is64Bit = Environment.Is64BitProcess;
 
@@ -33,6 +34,7 @@ internal sealed class Archive
         using MemoryStream stream = new(buffer, 0, (int)mpq.Length, false);
         using StreamReader reader = new(stream);
 
+        HashSet<string> fileList = new(StringComparer.InvariantCultureIgnoreCase);
         while (!reader.EndOfStream)
         {
             fileList.Add(reader.ReadLine()!);
@@ -42,6 +44,8 @@ internal sealed class Archive
 
         if (fileList.Count == 0)
             throw new InvalidOperationException($"{nameof(fileList)} contains no elements!");
+
+        this.fileList = fileList.ToFrozenSet(StringComparer.InvariantCultureIgnoreCase);
     }
 
     public bool IsOpen()
@@ -49,14 +53,10 @@ internal sealed class Archive
         return handle != IntPtr.Zero;
     }
 
-    public bool HasFile(string name)
-    {
-        return fileList.Contains(name);
-    }
+    public bool HasFile(string name) => fileList.Contains(name);
 
     public bool SFileCloseArchive()
     {
-        fileList.Clear();
         return Is64Bit
             ? StormDllx64.SFileCloseArchive(handle)
             : StormDllx86.SFileCloseArchive(handle);

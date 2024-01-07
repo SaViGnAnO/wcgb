@@ -98,7 +98,7 @@ public sealed class AdhocNPCGoal : GoapGoal, IGoapEventListener, IRouteProvider,
                 AddPrecondition(GoapKey.incombat, result);
         }
 
-        Keys = new KeyAction[] { key };
+        Keys = [key];
     }
 
     public void Dispose()

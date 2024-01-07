@@ -6,7 +6,7 @@
   "PathFilename": "_pack\\70-80\\Borean Tundra\\67-72_Borean Tundra_South Warsong Hold_Rhinos.json",
   "PathReduceSteps": true,
   "PathThereAndBack": false,
-  "MountKey": "N0",
+  "Mount": { "Key": "N0"},
   "IntVariables": {
     "MIN_HP_FOOD%": 40,
     "MIN_RUNE_TO_DUMP": 40,

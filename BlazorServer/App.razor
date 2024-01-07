@@ -1,10 +1,6 @@
-﻿@page "/"
-@namespace BlazorServer.Pages
-@using Frontend
-@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
-@{
-    Layout = null;
-}
+﻿@using Frontend
+
+@inject IHostEnvironment Env
 
 <!DOCTYPE html>
 <html lang="en">
@@ -12,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BlazorServer</title>
-    <base href="~/" />
+    <base href="/" />
 
     <link rel="stylesheet" href="_content/Frontend/css/bootstrap/bootstrap.icons.min.css" />
     <!--<link rel="stylesheet" href="_content/Frontend/css/bootstrap/bootstrap-theme.min.css" />-->
@@ -38,20 +34,24 @@
 </head>
 <body>
     <app>
-        <component type="typeof(App)" render-mode="ServerPrerendered" />
+        <Routes @rendermode="InteractiveServer" />
     </app>
 
     <div id="blazor-error-ui">
-        <environment include="Staging,Production">
-            An error has occurred. This application may no longer respond until reloaded.
-        </environment>
-        <environment include="Development">
+    @if (Env.IsDevelopment())
+    {
+        <text>
             An unhandled exception has occurred. See browser dev tools for details.
-        </environment>
-        <a href="" class="reload">Reload</a>
-        <a class="dismiss">🗙</a>
+        </text>
+    }
+    else
+    {
+        <text>
+            An error has occurred. This app may no longer respond until reloaded.
+        </text>
+    }
     </div>
 
-    <script src="_framework/blazor.server.js"></script>
+    <script src="_framework/blazor.web.js"></script>
 </body>
 </html>

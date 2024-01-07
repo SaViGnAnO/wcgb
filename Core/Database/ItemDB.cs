@@ -1,9 +1,12 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections.Frozen;
+using System.Collections.Generic;
+using System;
+
+using SharedLib;
+
 using static System.IO.File;
 using static System.IO.Path;
 using static Newtonsoft.Json.JsonConvert;
-using SharedLib;
-using System;
 
 namespace Core.Database;
 
@@ -14,21 +17,28 @@ public sealed class ItemDB
 
     public static readonly Item Backpack = new() { Entry = -1, Name = "Backpack", Quality = 1, SellPrice = 0 };
 
-    public Dictionary<int, Item> Items { get; } = new();
+    public FrozenDictionary<int, Item> Items { get; }
     public int[] FoodIds { get; }
     public int[] DrinkIds { get; }
 
     public ItemDB(DataConfig dataConfig)
     {
-        ReadOnlySpan<Item> items = DeserializeObject<Item[]>(ReadAllText(Join(dataConfig.ExpDbc, "items.json")))!;
-        for (int i = 0; i < items.Length; i++)
+        ReadOnlySpan<Item> span = DeserializeObject<Item[]>(
+            ReadAllText(Join(dataConfig.ExpDbc, "items.json")))!;
+
+        Dictionary<int, Item> items = [];
+        for (int i = 0; i < span.Length; i++)
         {
-            Items.Add(items[i].Entry, items[i]);
+            items.Add(span[i].Entry, span[i]);
         }
+        items.Add(Backpack.Entry, Backpack);
 
-        Items.Add(Backpack.Entry, Backpack);
+        this.Items = items.ToFrozenDictionary();
 
-        FoodIds = DeserializeObject<int[]>(ReadAllText(Join(dataConfig.ExpDbc, "foods.json")))!;
-        DrinkIds = DeserializeObject<int[]>(ReadAllText(Join(dataConfig.ExpDbc, "waters.json")))!;
+        FoodIds = DeserializeObject<int[]>(
+            ReadAllText(Join(dataConfig.ExpDbc, "foods.json")))!;
+
+        DrinkIds = DeserializeObject<int[]>(
+            ReadAllText(Join(dataConfig.ExpDbc, "waters.json")))!;
     }
 }

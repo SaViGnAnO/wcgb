@@ -51,13 +51,13 @@ public sealed class LocalPathingApi : IPPather
         if (path == null)
         {
             if (debug)
-                LogWarning($"Failed to find a path from {mapFrom} to {mapTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
+                logger.LogWarning($"Failed to find a path from {mapFrom} to {mapTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
 
             return Array.Empty<Vector3>();
         }
 
         if (debug)
-            LogDebug($"Finding route from {mapFrom} map {uiMap} to {mapTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
+            logger.LogDebug($"Finding route from {mapFrom} map {uiMap} to {mapTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
 
         if ((DateTime.UtcNow - lastSave).TotalMinutes >= 1)
         {
@@ -84,13 +84,13 @@ public sealed class LocalPathingApi : IPPather
         if (path == null)
         {
             if (debug)
-                LogWarning($"Failed to find a path from {worldFrom} to {worldTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
+                logger.LogWarning($"Failed to find a path from {worldFrom} to {worldTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
 
             return Array.Empty<Vector3>();
         }
 
         if (debug)
-            LogDebug($"Finding route from {worldFrom} map {uiMap} to {worldTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
+            logger.LogDebug($"Finding route from {worldFrom} map {uiMap} to {worldTo} took {Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds} ms.");
 
         if ((DateTime.UtcNow - lastSave).TotalMinutes >= 1)
         {
@@ -100,19 +100,4 @@ public sealed class LocalPathingApi : IPPather
 
         return path.locations.ToArray();
     }
-
-
-    #region Logging
-
-    private void LogDebug(string text)
-    {
-        logger.LogDebug(text);
-    }
-
-    private void LogWarning(string text)
-    {
-        logger.LogWarning(text);
-    }
-
-    #endregion
 }

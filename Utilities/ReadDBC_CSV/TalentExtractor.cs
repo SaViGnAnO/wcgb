@@ -3,123 +3,103 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using SharedLib;
+using nietras.SeparatedValues;
 
-namespace ReadDBC_CSV
+namespace ReadDBC_CSV;
+
+internal sealed class TalentExtractor : IExtractor
 {
-    internal sealed class TalentExtractor : IExtractor
+    private readonly string path;
+
+    public string[] FileRequirement { get; } =
+    [
+        "talenttab.csv",
+        "talent.csv"
+    ];
+
+    public TalentExtractor(string path)
     {
-        private readonly string path;
-
-        public List<string> FileRequirement { get; } = new List<string>()
-        {
-            "talenttab.csv",
-            "talent.csv"
-        };
-
-        public TalentExtractor(string path)
-        {
-            this.path = path;
-        }
-
-        public void Run()
-        {
-            string talenttabFile = Path.Join(path, FileRequirement[0]);
-            List<TalentTab> talenttabs = ExtractTalentTabs(talenttabFile);
-            Console.WriteLine($"TalentTabs: {talenttabs.Count}");
-            File.WriteAllText(Path.Join(path, "talenttab.json"), JsonConvert.SerializeObject(talenttabs));
-
-            string talentFile = Path.Join(path, FileRequirement[1]);
-            List<TalentTreeElement> talents = ExtractTalentTrees(talentFile);
-            Console.WriteLine($"Talents: {talents.Count}");
-            File.WriteAllText(Path.Join(path, "talent.json"), JsonConvert.SerializeObject(talents));
-        }
-
-        private static List<TalentTab> ExtractTalentTabs(string path)
-        {
-            int idIndex = -1;
-            int orderIndex = -1;
-            int classMaskIndex = -1;
-
-            CSVExtractor extractor = new();
-            extractor.HeaderAction = () =>
-            {
-                idIndex = extractor.FindIndex("ID");
-                orderIndex = extractor.FindIndex("OrderIndex");
-                classMaskIndex = extractor.FindIndex("ClassMask");
-            };
-
-            List<TalentTab> talenttabs = new();
-            void extractLine(string[] values)
-            {
-                talenttabs.Add(new TalentTab
-                {
-                    Id = int.Parse(values[idIndex]),
-                    OrderIndex = int.Parse(values[orderIndex]),
-                    ClassMask = int.Parse(values[classMaskIndex])
-                });
-            }
-
-            extractor.ExtractTemplate(path, extractLine);
-
-            return talenttabs;
-        }
-
-        public static List<TalentTreeElement> ExtractTalentTrees(string path)
-        {
-            int idIndex = -1;
-
-            int tierIDIndex = -1;
-            int columnIndex = -1;
-            int tabIDIndex = -1;
-
-            int spellRank0Index = -1;
-            int spellRank1Index = -1;
-            int spellRank2Index = -1;
-            int spellRank3Index = -1;
-            int spellRank4Index = -1;
-
-            CSVExtractor extractor = new();
-            extractor.HeaderAction = () =>
-            {
-                idIndex = extractor.FindIndex("ID");
-
-                tierIDIndex = extractor.FindIndex("TierID");
-                columnIndex = extractor.FindIndex("ColumnIndex");
-                tabIDIndex = extractor.FindIndex("TabID");
-
-                spellRank0Index = extractor.FindIndex("SpellRank[0]", "SpellRank_0");
-                spellRank1Index = extractor.FindIndex("SpellRank[1]", "SpellRank_1");
-                spellRank2Index = extractor.FindIndex("SpellRank[2]", "SpellRank_2");
-                spellRank3Index = extractor.FindIndex("SpellRank[3]", "SpellRank_3");
-                spellRank4Index = extractor.FindIndex("SpellRank[4]", "SpellRank_4");
-            };
-
-
-            List<TalentTreeElement> talents = new();
-            void extractLine(string[] values)
-            {
-                //Console.WriteLine($"{values[entryIndex]} - {values[nameIndex]}");
-                talents.Add(new TalentTreeElement
-                {
-                    TierID = int.Parse(values[tierIDIndex]),
-                    ColumnIndex = int.Parse(values[columnIndex]),
-                    TabID = int.Parse(values[tabIDIndex]),
-
-                    SpellIds = new int[]
-                    {
-                        int.Parse(values[spellRank0Index]),
-                        int.Parse(values[spellRank1Index]),
-                        int.Parse(values[spellRank2Index]),
-                        int.Parse(values[spellRank3Index]),
-                        int.Parse(values[spellRank4Index])
-                    }
-                });
-            }
-
-            extractor.ExtractTemplate(path, extractLine);
-
-            return talents;
-        }
-
+        this.path = path;
     }
+
+    public void Run()
+    {
+        string talenttabFile = Path.Join(path, FileRequirement[0]);
+        List<TalentTab> talenttabs = ExtractTalentTabs(talenttabFile);
+        Console.WriteLine($"TalentTabs: {talenttabs.Count}");
+        File.WriteAllText(Path.Join(path, "talenttab.json"), JsonConvert.SerializeObject(talenttabs));
+
+        string talentFile = Path.Join(path, FileRequirement[1]);
+        List<TalentTreeElement> talents = ExtractTalentTrees(talentFile);
+        Console.WriteLine($"Talents: {talents.Count}");
+        File.WriteAllText(Path.Join(path, "talent.json"), JsonConvert.SerializeObject(talents));
+    }
+
+    private static List<TalentTab> ExtractTalentTabs(string path)
+    {
+        using var reader = Sep.Reader(o => o with
+        {
+            Unescape = true,
+        }).FromFile(path);
+
+        int id = reader.Header.IndexOf("ID");
+        int orderIndex = reader.Header.IndexOf("OrderIndex");
+        int classMask = reader.Header.IndexOf("ClassMask");
+
+        List<TalentTab> talenttabs = new();
+        foreach (SepReader.Row row in reader)
+        {
+            talenttabs.Add(new TalentTab
+            {
+                Id = row[id].Parse<int>(),
+                OrderIndex = row[orderIndex].Parse<int>(),
+                ClassMask = row[classMask].Parse<int>()
+            });
+        }
+
+        return talenttabs;
+    }
+
+    public static List<TalentTreeElement> ExtractTalentTrees(string path)
+    {
+        using var reader = Sep.Reader(o => o with
+        {
+            Unescape = true,
+        }).FromFile(path);
+
+        int id = reader.Header.IndexOf("ID");
+
+        int tierID = reader.Header.IndexOf("TierID");
+        int columnIndex = reader.Header.IndexOf("ColumnIndex");
+        int tabID = reader.Header.IndexOf("TabID");
+
+        int spellRank0 = reader.Header.IndexOf("SpellRank_0", "SpellRank[0]");
+        int spellRank1 = reader.Header.IndexOf("SpellRank_1", "SpellRank[1]");
+        int spellRank2 = reader.Header.IndexOf("SpellRank_2", "SpellRank[2]");
+        int spellRank3 = reader.Header.IndexOf("SpellRank_3", "SpellRank[3]");
+        int spellRank4 = reader.Header.IndexOf("SpellRank_4", "SpellRank[4]");
+
+        List<TalentTreeElement> talents = [];
+        foreach (SepReader.Row row in reader)
+        {
+            //Console.WriteLine($"{values[entryIndex]} - {values[nameIndex]}");
+            talents.Add(new TalentTreeElement
+            {
+                TierID = row[tierID].Parse<int>(),
+                ColumnIndex = row[columnIndex].Parse<int>(),
+                TabID = row[tabID].Parse<int>(),
+                SpellIds =
+                [
+                    row[spellRank0].Parse<int>(),
+                    row[spellRank1].Parse<int>(),
+                    row[spellRank2].Parse<int>(),
+                    row[spellRank3].Parse<int>(),
+                    row[spellRank4].Parse<int>()
+                ]
+            });
+        }
+
+        return talents;
+    }
+
 }

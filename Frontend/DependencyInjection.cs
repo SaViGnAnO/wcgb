@@ -10,8 +10,12 @@ public static class DependencyInjection
     public static IServiceCollection AddFrontend(this IServiceCollection services)
     {
         services.AddMatBlazor();
+
         services.AddRazorPages();
-        services.AddServerSideBlazor();
+
+        services.AddRazorComponents()
+            .AddInteractiveServerComponents();
+
         services.AddBlazorTable();
 
         return services;

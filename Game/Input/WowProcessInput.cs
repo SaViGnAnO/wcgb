@@ -21,7 +21,7 @@ public sealed partial class WowProcessInput : IMouseInput
 
     private readonly WowProcess process;
     private readonly InputWindowsNative nativeInput;
-    private readonly IInput simulatorInput;
+    private readonly InputSimulator simulatorInput;
 
     private readonly BitArray keysDown;
 
@@ -39,8 +39,8 @@ public sealed partial class WowProcessInput : IMouseInput
 
         keysDown = new((int)ConsoleKey.OemClear);
 
-        nativeInput = new InputWindowsNative(process, cts, InputDuration.FastPress);
-        simulatorInput = new InputSimulator(process, cts, InputDuration.FastPress);
+        nativeInput = new(process, cts, InputDuration.FastPress);
+        simulatorInput = new(process, cts, InputDuration.FastPress);
     }
 
     public void Reset()

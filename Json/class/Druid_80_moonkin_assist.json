@@ -4,7 +4,7 @@
   "Mode": "AssistFocus",
   "Loot": true,
   "Skin": true,
-  "MountKey": "N0",
+  "Mount": {"Key":"N0"},
   "PathFilename": "_pack\\60-70\\Terokkar Forest\\62-64.json",
   "PathThereAndBack": false,
   "PathReduceSteps": true,
@@ -18,6 +18,10 @@
     "FBuff_Mount": 132239,
     "USE_TRINKET_1": 1,
     "USE_TRINKET_2": 1
+  },
+  "Jump":
+  {
+    "PressDuration": 200
   },
   "Form": {
     "Sequence": [
@@ -262,6 +266,27 @@
         "Key": "-",
         "Form": "None",
         "Requirement": "Mana% < 40 && DrinkCount > 0"
+      }
+    ]
+  },
+  "NPC": {
+    "Sequence": [
+      {
+        "Name": "Repair",
+        "Key": "C",
+        "Requirement": "Durability% < 35",
+        "PathFilename": "Terokkar Forest_2023_09_04_16_46_24.json",
+        "Cost": 6
+      },
+      {
+        "Name": "Sell",
+        "Key": "C",
+        "Requirements": [
+          "BagFull",
+          "BagGreyItem"
+        ],
+        "PathFilename": "Terokkar Forest_2023_09_04_16_46_24.json",
+        "Cost": 6
       }
     ]
   }

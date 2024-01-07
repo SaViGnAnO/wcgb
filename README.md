@@ -4,44 +4,72 @@
 
 # Master Of Puppets
 
-- The project current goal is to support `Season of Mastery Classic`, `Burning Crusade Classic`, `Wrath of the Lich King Classic`
+The project current goal is to support `Season of Mastery Classic`, `Burning Crusade Classic`, `Wrath of the Lich King Classic`
+
+# Components
 
 - **Addon**: Modified [Happy-Pixels](https://github.com/FreeHongKongMMO/Happy-Pixels) to read the game state.
-
 - **Frontend**: [ASP.NET Core Razor components](https://docs.microsoft.com/en-us/aspnet/core/blazor/components/).
-
 - **BlazorServer**: [ASP.NET Core Blazor](https://docs.microsoft.com/en-us/aspnet/core/blazor) to show the state in a browser.
-
 - **HeadlessServer**: Run from CommandLine without Frontend. Requires valid configuration files present next to the executable.
-
 - Backend(**Core/Game**): written in C#. Screen capture, mouse and keyboard clicking. No memory tampering and DLL injection.
 
-- Further detail about the architecture can be found in [Blog post](http://www.codesin.net/post/wowbot/).
+# Architecture
 
-- Pathfinders: 
-    * World map - Outdoor there are multiple solutions - *by default the app attempts to discover the available services in the following order*:
-        * **V3 Remote**: Out of process [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/guess-z-coord-after-rewrite)
-        * **V1 Remote**: Out of process [PathingAPI](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PathingAPI) more info [here](#v1-remote-pathing---pathingapi)
-        * **V1 Local**: In process [PPather](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PPather)
-    * World map - Indoors pathfinder only works properly if `PathFilename` is exists.
-    * Dungeons / instances **not** supported!
+Further detail about the architecture can be found in [Blog post](http://www.codesin.net/post/wowbot/).
+
+# Pathfinders
+
+* World map - Outdoor there are multiple solutions - *by default the app attempts to discover the available services in the following order*:
+    * **V3 Remote**: Out of process [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/guess-z-coord-after-rewrite)
+    * **V1 Remote**: Out of process [PathingAPI](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PathingAPI) more info [here](#v1-remote-pathing---pathingapi)
+    * **V1 Local**: In process [PPather](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PPather)
+* World map - Indoors pathfinder only works properly if `PathFilename` is exists.
+* Dungeons / instances **not** supported!
 
 # Features
 
+## General Features
+
 - Game fullscreen or windowed mode
 - Addon supports all available client languages
-- Most of the classes should work. Some classes have more support than others.
-- Highly configurable Combat rotation described in [Class Configuration](#12-class-configuration)
-- Utilizing the Actionbar related APIs to retrieve ActionbarSlot(usable, cost)
-- One click to populate Actionbar based on [Class Configuration](#12-class-configuration)
+- All playable classes is supported. Examples can be found under [/Json/class/](./Json/class)
+
+## Combat and Actionbar Features
+
+- Highly configurable combat rotation described in [Class Configuration](#12-class-configuration)
+- Utilizing the Actionbar related APIs to retrieve ActionbarSlot (usable, cost)
+- Remap essential keybindings and support more Actionbar slots up to `34`
+- Added a new input system to handle modifier keys
+
+## Navigation and Grind Features
+
 - Pathfinder in the current zone to the grind location
 - Grind mobs in the described `PathFilename`
 - Blacklist certain NPCs
-- Loot and GatherCorpse (Skin, Herb, Mine, Salvage)
+
+## Resource Management
+
+- Loot and `GatherCorpse` which includes (Skin, Herb, Mine, Salvage)
 - Vendor goods
-- Repair equipments
+- Repair equipment
+- Improved Loot Goal
+- Added Skinning Goal -> `GatherCorpse` (Skin, Herb, Mine, Salvage)
+- Introduced a concept of `Produce`/`Consume` corpses. Killing multiple enemies in a single combat can consume them all.
+
+## Additional Features
+
 - Corpse run
-- Semi automated gathering [mode](#modes)
+- Semi-automated gathering [mode](#modes)
+- Frontend Dark mode
+- Frontend Runtime Class Profile picker
+- Frontend Runtime Path Profile autocomplete search
+- Frontend Edit the loaded profile
+- Frontend `ActionbarPopulator` One click to populate Actionbar based on [Class Configuration](#12-class-configuration)
+- `DataConfig`: change where the external data(DBC, MPQ, profiles) can be found
+- `NPCNameFinder`: extended to friendly/neutral units
+- Support more 4:3 aspect ratio based resolution
+- Addon is rewritten/reorganized with performance in mind(caching and reduce cell paint) to achieve game refresh rate speed
 
 # Media
 
@@ -63,82 +91,73 @@
 
 Create an issue with the given template.
 
-# Contributing
+# Contribute
 
 You are welcome to create pull requests. Some ideas of things that could be improved:
 
 * This readme
 * More route and class profiles
-
-# Contribution
-
-* Frontend Runtime Class Profile picker
-* Frontend Runtime Path Profile autocomplete search
-* Frontend Dark mode
-* Improved Loot Goal
-* Added Skinning Goal -> GatherCorpse (Skin, Herb, Mine, Salvage)
-* Introduced a concept of `Produce`/`Consume` corpses. Killing multiple enemies in a single combat, can consume them all.
-* `ActionbarPopulator` based on [Class Configuration](#12-class-configuration)
-* `DataConfig`: change where the external data(DBC, MPQ, profiles) can be found
-* Edit the loaded profile from frontend
-* `NPCNameFinder`: extended to friendly/neutral units
-* Remap essential keybindings and support more Actionbar slots up to `34`
-* Added a new input system to handle modifier keys
-* Support more 4:3 aspect ratio based resolution
-* Addon is rewritten/reorganized with performance in mind(caching and reduce cell paint) to achieve game refresh rate speed
+* Feel free to ask questions by opening new issues
 
 # Getting it working
 
 ## 1. Download this repository
 
-Put the contents of the repo into a folder. e.g `C:\WowClassicGrindBot`. I am going to refer to this folder from now on, so just substitute your own folder path.
+Put the contents of the repo into a folder, e.g., `C:\WowClassicGrindBot`. I am going to refer to this folder from now on, so just substitute your folder path.
 
-## 2.1 Using V1 Local/Remote Pathhing
+## 2.1 Using V1 Local/Remote Pathing
 
-Download the MPQ route files.
+- Download the MPQ route files.
+- These files are required to start the application!
 
-These files are required in order to start the application!
+**Vanilla:**
+[**common-2.MPQ**](https://mega.nz/file/vXQCBCha#m7COhB9HQd86a5iNAT0-fMLsc-BtoTRO1eIBJNrdTH8) (1.7Gb)
 
-* Classic: [**common-2.MPQ**](https://mega.nz/file/vXQCBCha#m7COhB9HQd86a5iNAT0-fMLsc-BtoTRO1eIBJNrdTH8) (1.7Gb)
-* TBC: [**expansion.MPQ**](https://mega.nz/file/Of4i2YQS#egDGj-SXi9RigG-_8kPITihFsLom2L1IFF-ltnB3wmU) (1.8Gb)
-* WOTLK: [**lichking.MPQ**](https://mega.nz/file/vDYWSTrK#fvaiuHpd-FTVsQT4ghGLK6QJLZyA87c1rlBEeu1_Btk) (2.5Gb)
+**TBC:**
+[**expansion.MPQ**](https://mega.nz/file/Of4i2YQS#egDGj-SXi9RigG-_8kPITihFsLom2L1IFF-ltnB3wmU) (1.8Gb)
 
-Copy the previously mentioned files under **\Json\MPQ** folder (e.g. `C:\WowClassicGrindBot\Json\MPQ`)
+**WOTLK:**
+[**lichking.MPQ**](https://mega.nz/file/vDYWSTrK#fvaiuHpd-FTVsQT4ghGLK6QJLZyA87c1rlBEeu1_Btk) (2.5Gb)
 
-Technical details about **V1**:
+Copy these files under the **\Json\MPQ** folder (e.g., `C:\WowClassicGrindBot\Json\MPQ`)
+
+Technical details about **V1:**
 - Precompiled x86 and x64 [Stormlib](https://github.com/ladislav-zezula/StormLib)
 - Source code accessible, written in **C#**
 - Uses `*.mpq` files as source
 - Extracts the geometry on demand during runtime
-- Loads those `*.adt` files which are in use. Lower memory usage compare to V3
+- Loads those `*.adt` files which are in use. Lower memory usage compared to V3
 - After calculating a path successfully, caches it under `Json\PathInfo\_CONTINENT_NAME_\`
 - Easy to visualize path steps and development iteratively
 
 ## 2.2 Optional - Using V3 Remote Pathing
 
-Download the navmesh files.
+- Download the navmesh files.
 
-* [**Vanilla + TBC**](https://mega.nz/file/7HgkHIyA#c_gzUeTadecWY0JDY3KT39ktfPGLs2vzt_90bMvhszk)
-* [**Vanilla + TBC + Wrath**](https://mega.nz/file/zWQ2XIKI#9EKWOPyyTMfY1LACkcP_wioZ0poVIuaGh2xcRh4V9dw)
+**Vanilla + TBC:**
+[**Vanilla + TBC**](https://mega.nz/file/7HgkHIyA#c_gzUeTadecWY0JDY3KT39ktfPGLs2vzt_90bMvhszk)
 
-1. Extract and copy anywhere you want. like `C:\mmaps`
-1. Create a [build](https://github.com/Xian55/WowClassicGrindBot/issues/449) of [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/guess-z-coord-after-rewrite)
-1. Navigate to the build location and find `config.cfg`
-1. Edit the file last line to look as `sMmapsPath=C:\mmaps`
+**Vanilla + TBC + Wrath:**
+[**Vanilla + TBC + Wrath**](https://mega.nz/file/zWQ2XIKI#9EKWOPyyTMfY1LACkcP_wioZ0poVIuaGh2xcRh4V9dw)
 
-Technical details about **V3**:
-- Uses an another project called [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/guess-z-coord-after-rewrite)
+1. Extract and copy anywhere you want, like `C:\mmaps`
+2. Create a [build](https://github.com/Xian55/WowClassicGrindBot/issues/449) of [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/guess-z-coord-after-rewrite)
+3. Navigate to the build location and find `config.cfg`
+4. Edit the last line of the file to look like `sMmapsPath=C:\mmaps`
+
+Technical details about **V3:**
+- Uses another project called [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/guess-z-coord-after-rewrite)
 - Under the hood uses [Recast and Detour](https://github.com/recastnavigation/recastnavigation)
 - Source code is written in **C++**
 - Uses `*.mmap` files as source
 - Loads the whole continent navmesh data into memory. Higher base memory usage, at least around *~600mb*
 - It's super fast path calculations
 - Not always suitable for player movement.
-- Requires considerable amount of time to tweak the navmesh config, then bake it
+- Requires a considerable amount of time to tweak the navmesh config, then bake it
 
 ## 3.1 System / Video Requirements
 
-Resolutions which based on either 4:3 aspect ratio, tested resolutions:
+Resolutions which based on either 4:3 aspect ratio, the followings are tested:
 * 1024 x 768
 * 1920 x 1080
 * 3840 x 2160
@@ -168,10 +187,20 @@ Should be only concerned about `Friz Quadrata: the "Everything Else" Font` which
 
 Example - [Robot-Medium](https://fonts.google.com/specimen/Roboto?thickness=5) - Shows big improvement to the `NpcNameFinder` component which is responsible to find - friendly, enemy, corpse - names above NPCs head.
 
+## 3.4 Optional - Enable Minimum Character Name Size
+
+In the modern client under ESC > Options > Accessibility > General > **Minimum Character Name Size = 6**
+
+This feature sets a minimum size of the character/npc names above their head.
+
+However it has one downside, there's distance based alpha blending. It could cause issues with Corpse names.
+
+More info [506](https://github.com/Xian55/WowClassicGrindBot/pull/506)
+
 ## 4.1 Build Requirements
 
 * Windows 10 and above
-* [.NET 7.0 SDK](https://dotnet.microsoft.com/download/dotnet/7.0)
+* [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 * `AnyCPU`, `x86` and `x64` build supported.
 
 ## 4.2 Build the solution
@@ -204,9 +233,11 @@ The app reads the game state using small blocks of color shown at the top of the
     pause
     ```
 
-2. Execute the `run.bat`. This will start the bot and Chrome, Wow must be already running. If you get `"Unable to find the Wow process is it running ?"` in the console window then it can't find exe.
+2. Execute the `run.bat`. This will start the bot and Chrome, WoW client must be already running. 
 
-3. When running the BlazorServer for the first time you will have to follow a setup process:
+2. If you get `"Unable to find the Wow process is it running ?"` in the console window then it can't find game executable.
+
+4. When running the BlazorServer for the first time you will have to follow a setup process:
     * Start the game and login with a character
     * Navigate to `2. Addon Configuration`
     * Fill the `Author` input form
@@ -217,7 +248,7 @@ The app reads the game state using small blocks of color shown at the top of the
     * Navigate to `5. Frame Configuration` [Guidance for good DataFrame](../../wiki/Guidance-for-good-DataFrame)
     * Click on `Auto` -> `Start` [Validate FrameConfiguration](../../wiki/Validating-FrameConfiguration)
 
-4. Addon Control panel `Status` is `Update Available`
+5. Addon Control panel `Status` is `Update Available`
     * Press `Save` button
     * Should see a loading screen
     * Restart the BlazorServer
@@ -241,8 +272,7 @@ A successful [Configuration process](#5-blazorserver-configuration-process) has 
 
 In order to run `HeadlessServer` please look at the `HeadlessServer\run.bat`.
 
-**Required** cli parameter: relative [Class Configuration](#12-class-configuration) file name under the `./Json/class/` folder.
-
+**Required** cli parameter: relative [Class Configuration](#12-class-configuration) file name under the [/Json/class/](./Json/class) folder.
 
 **Optional** cli parameters:
 
@@ -255,7 +285,7 @@ In order to run `HeadlessServer` please look at the `HeadlessServer\run.bat`.
 | `portv1` | Navigation Remote V1 port | `5001` | - |
 | `hostv3` | Navigation Remote V3 host | `127.0.0.1` | - |
 | `portv3` | Navigation Remote V3 port | `47111` | - |
-| `-d`<br>`-diag` | Diagnostics, when set, takes screen captures under `Json\cap\*.json` | - | - |
+| `-d`<br>`-diag` | Diagnostics, when set, takes screen captures under `Json\cap\*.jpg` | - | - |
 | `-o`<br>`-overlay` | Show NpcNameFinder Overlay | `false` | - |
 | `-t`<br>`-otargeting` | While overlay enabled, show Targeting points | `false` | - |
 | `-s`<br>`-oskinning` | While overlay enabled, show Skinning points | `false` | - |
@@ -275,7 +305,9 @@ cd C:\WowClassicGrindBot\HeadlessServer
 
 ## 8. Configure the Wow Client - Interface Options
 
-Need to make sure that certain interface options are set. The most important are `Click-to-Move` and `Do Not Flash Screen at Low Health`.
+Need to make sure that certain interface options are set.
+
+The most important are `Click-to-Move` and `Do Not Flash Screen at Low Health`.
 
 From the main menu (ESC) set the following under Interface Options:
 
@@ -301,16 +333,16 @@ From the main menu (ESC) -> `Key Bindings` set the following:
 
 `Movement Keys`:
 
-| In-Game | ClassConfiguration Name | Default ConsoleKey | Description |
-| ---- | ---- | ---- | ---- |
-| Move Forward | ForwardKey | UpArrow | Change this to `87` for pressing `W` |
-| Move Backward | BackwardKey | DownArrow | Change this to `83` for pressing `S` |
-| Turn Left | TurnLeftKey | LeftArrow | Change this to `65` for pressing `A` |
-| Turn Right | TurnRightKey | RightArrow | Change this to `68` for pressing `D` |
-| Jump | JumpKey | Spacebar | ---- |
-| Sit/Move down | StandUpKey | X |  Used after drinking or eating |
+| In-Game | ClassConfiguration Name | Default [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) |
+| ---- | ---- | ---- |
+| Move Forward | ForwardKey | `UpArrow` |
+| Move Backward | BackwardKey | `DownArrow` |
+| Turn Left | TurnLeftKey | `LeftArrow` |
+| Turn Right | TurnRightKey | `RightArrow` |
+| Jump | Jump.Key | `Spacebar` |
+| Sit/Move down | StandUp.Key | `X` |
 
-To change the default movement keys to `WASD` in the [Class Configuration](#12-class-configuration) file or look at the example `Json\class\Warrior_1_MovementKeys.json`
+To change the default movement keys from arrows to `WASD` in the [Class Configuration](#12-class-configuration) file or look at the example `Json\class\Warrior_1_MovementKeys.json`
 ```json
 "ForwardKey": 87,   // W
 "BackwardKey": 83,  // S
@@ -320,32 +352,31 @@ To change the default movement keys to `WASD` in the [Class Configuration](#12-c
 
 `Targeting`:
 
-| In-Game | Key | ClassConfiguration KeyAction Name | Description |
+| In-Game | HotKey | ClassConfiguration KeyAction | Description |
 | ---- | ---- | ---- | ---- |
-| Target Nearest Enemy | Tab | TargetNearestTargetKey | ---- |
-| Target Pet | Multiply | TargetPetKey | Only pet based class |
-| Target Last Target | G | TargetLastTargetKey | Loot last target |
-| Interact With Mouseover | J | InteractMouseOverKey | Mouse based actions |
-| Interact With Target | I | InteractKey | Targeting and combat |
-| Assist Target | F | TargetTargetOfTargetKey | ---- |
-| Pet attack | Subtract | PetAttackKey | Only pet based class |
-| Target Focus | PageUp | TargetFocusKey | Only for TBC or Wrath version, `"AssistFocus"` Mode |
-| Target Party Member 1 | PageUp | TargetFocusKey | Only for Vanilla version, `"AssistFocus"` Mode |
+| Target Nearest Enemy | `Tab` | TargetNearestTarget | ---- |
+| Target Pet | `Multiply` | TargetPet | Only pet based class |
+| Target Last Target | `G` | TargetLastTarget | Loot last target |
+| Interact With Mouseover | `J` | InteractMouseOver | Mouse based actions |
+| Interact With Target | `I` | Interact | Targeting and combat |
+| Assist Target | `F` | TargetTargetOfTarget | ---- |
+| Pet attack | `Subtract` | PetAttack | Only pet based class |
+| Target Focus | `PageUp` | TargetFocus | TBC or Wrath version, `"AssistFocus"` Mode |
+| Target Party Member 1 | `PageUp` | TargetFocus | Vanilla version, `"AssistFocus"` Mode |
 
 ## 10.1. Actionbar Key Bindings:
 
-The default class profiles assumes the following `Keybinds` setup while using English Keyboard layout.
+The default class profiles assumes the following `Keybinds` setup while using **English Keyboard** layout.
+
 In total, `34` customizable key can be configured.
 
 Highly recommended to use the default setup, in order to get properly working the `ActionBarSlotCost` and `ActionBarSlotUsable` features!
 
-| ActionSlot | Key | Description |
-| --- | --- | --- |
-| 1-12 | 1,2,3 .. 9,0,-,= | 0 is the 10th key. |
-| Bottom Right ActionBar | - | - |
-| 49-58 | N1,N2,N3 .. N9,N0 | N means Numpad - 0 is the 10th key |
-| Bottom Left ActionBar | - | - |
-| 61-72 | F1,F2,F3 .. F11,F12 | F means Functions |
+| Actionbar |ActionSlot | Key | Description |
+| --- | --- | --- | --- |
+| Main | 1-12 | 1,2,3 .. 9,0,-,= | 0 is the 10th key. |
+| Bottom Right | 49-58 | N1,N2,N3 .. N9,N0 | N means Numpad 0 is the 10th key |
+| Bottom Left | 61-72 | F1,F2,F3 .. F11,F12 | F means Functions |
 
 <a href="./images/keybindings.png" target="_blank">
    <img alt="Screenshot" src="./images/keybindings.png" width="75%">
@@ -380,11 +411,13 @@ For each of the following click + to add a new key binding.
 
 ## 12. Class Configuration
 
-Each class has a configuration file in `\Json\class` e.g. the config for a `Warrior` it is in file `Warrior_1.json`.
+Each class has a configuration file in [/Json/class/](./Json/class) e.g. the config for a `Warrior` it is in file [Warrior_1.json](./Json/class/Warrior_1.json).
 
 The configuration file determines what spells the character casts, when pulling and in combat, where to vendor and repair and what buffs consider.
 
-Take a look at the class files in `/Json/class` for examples of what you can do. Your class file probably exists and just needs to be edited to set the pathing file name.
+Take a look at the class files in [/Json/class/](./Json/class) for examples of what you can do.
+
+Your class file probably exists and just needs to be edited to set the pathing file name.
 
 | Property Name | Description | Optional | Default value |
 | --- | --- | --- | --- |
@@ -420,21 +453,39 @@ Take a look at the class files in `/Json/class` for examples of what you can do.
 | `"Wait"` | [KeyActions](#keyactions) to execute upon [Wait Goal](#wait-goals) | true | `{}` |
 | --- | --- | --- | --- |
 | `"GatherFindKeys"` | List of strings for switching between gathering profiles | true | `string[]` |
-| `"JumpKey"` | `ConsoleKey` to be pressed on Jump | true | `"Spacebar"` |
-| `"InteractKey"` | `ConsoleKey` to be pressed on Interact | true | `"I"` |
-| `"TargetLastTargetKey"` | `ConsoleKey` to be pressed to Target last target | true | `"G"` |
-| `"StandUpKey"` | `ConsoleKey` to be pressed to stand up | true | `"X"` |
-| `"ClearTargetKey"` | `ConsoleKey` to be pressed to clear current target | true | `"Insert"` |
-| `"StopAttackKey"` | `ConsoleKey` to be pressed to stop attack | true | `"Delete"` |
-| `"TargetNearestTargetKey"` | `ConsoleKey` to be pressed to target nearest target | true | `"Tab"` |
-| `"TargetTargetOfTargetKey"` | `ConsoleKey` to be pressed to target - target of target | true | `"F"` |
-| `"TargetPetKey"` | `ConsoleKey` to be pressed to target pet | true | `"Multiply"` |
-| `"PetAttackKey"` | `ConsoleKey` to be pressed to send attack pet | true | `"Subtract"` |
-| `"MountKey"` | `ConsoleKey` to be pressed to use mount | true | `"O"` |
-| `"ForwardKey"` | `ConsoleKey` to be pressed to move forward | true | `"UpArrow"` |
-| `"BackwardKey"` | `ConsoleKey` to be pressed to move backward | true | `"DownArrow"` |
-| `"TurnLeftKey"` | `ConsoleKey` to be pressed to turn left | true | `"LeftArrow"` |
-| `"TurnRightKey"` | `ConsoleKey` to be pressed to turn right | true | `"RightArrow"` |
+| --- | --- | --- | --- |
+| BaseActionKeys | --- | --- | --- |
+| --- | --- | --- | --- |
+| `"Jump.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to Jump | true | `"Spacebar"` |
+| `"Interact.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to Interact | true | `"I"` |
+| `"TargetLastTarget.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to Target last target | true | `"G"` |
+| `"ClearTarget.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to clear current target | true | `"Insert"` |
+| `"StopAttack.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to stop attack | true | `"Delete"` |
+| `"TargetNearestTarget.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to target nearest target | true | `"Tab"` |
+| `"TargetTargetOfTarget.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to target - target of target | true | `"F"` |
+| `"TargetPet.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to target pet | true | `"Multiply"` |
+| `"PetAttack.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to send attack pet | true | `"Subtract"` |
+| `"Mount.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to use mount | true | `"O"` |
+| `"StandUp.Key"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to stand up | true | `"X"` |
+| --- | --- | --- | --- |
+| `"ForwardKey"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to move forward | true | `"UpArrow"` |
+| `"BackwardKey"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to move backward | true | `"DownArrow"` |
+| `"TurnLeftKey"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to turn left | true | `"LeftArrow"` |
+| `"TurnRightKey"` | [ConsoleKey](https://learn.microsoft.com/en-us/dotnet/api/system.consolekey) to be pressed to turn right | true | `"RightArrow"` |
+
+The following [KeyActions](#keyactions) are `BaseActions`: `Jump`, `Interact`, `TargetLastTarget`, `ClearTarget`, `StopAttack`, `TargetNearestTarget`, `TargetTargetOfTarget`, `TargetPet`, `PetAttack`, `Mount`, `StandUp`. 
+
+Which are shared and unified among [Pull Goal](#pull-goal) and [Combat Goal](#combat-goal).
+
+e.g override default [KeyActions](#keyactions) properties in the [Class Configuration](#12-class-configuration) file
+```json
+"Mount": {
+    "Key": "N0"
+},
+"Jump": {
+    "PressDuration": 200
+}
+```
 
 ### TargetMask
 
@@ -488,13 +539,12 @@ e.g.
 ### KeyboardOnly
 
 By Default, the bot attempts to use the mouse for the following reasons:
-* (during `Follow Route`) Target selection
-* (during `Consume Corpse`) `"Loot"`
-* (during `Consume Corpse`) GatherCorpse(`"Skin"`, `"Herb"`, `"Mine"`, `"Salvage"`)
+* `Follow Route Goal` Targeting non blacklisted npcs
+* `Loot Goal` and `Skinning Goal` while acquiring target
 
-You can disable this behaviour by setting `KeyboardOnly` to `true`. Which has the following effects:
-* `"Loot"` limited, only capable of looting by selecting last target. So after each combat only the **last npc** can be looted.
-* GatherCorpse(`"Skin"`, `"Herb"`, `"Mine"`, `"Salvage"`) unavailable.
+You can disable this behavior by setting `KeyboardOnly` to `true` in the [Class Configuration](#12-class-configuration). Which has the following effects:
+* `Loot` limited, only capable of looting by selecting last target. So after each killed mob only the **last npc** can be looted.
+* GatherCorpse(`Skin`, `Herb`, `Mine`, `Salvage`) unavailable.
 * Target selection limited to only `TargetNearestTargetKey`, which significantly reduce how quickly can find the next target.
 
 ### IntVariables
@@ -507,17 +557,19 @@ For example look at the Warlock profiles.
     "DOT_MIN_HEALTH%": 35,
     "Debuff_Frost Fever": 237522,   // iconId https://www.wowhead.com/icons
     "Debuff_Blood Plague": 237514,  // iconId https://www.wowhead.com/icons
+    "Item_Soul_Shard": 6265,
 }
 ```
 
 ### Path
 
-The path that the class follows is a `json` file in `/Json/path/` which contains a list of `x` & `y` coordinates the bot will traverse while looking for mobs.
+The path that the player follows during [Follow Route Goal](#follow-route-goal), its a `json` file under [/Json/path/](./Json/path) which contains a list of `x`,`y`,`z` coordinates while looking for mobs.
 ```json
 "PathFilename": "58_Winterspring.2.json",   // the path to walk when alive
 "PathThereAndBack": true,                   // if true walks the path and the walks it backwards.
 "PathReduceSteps": true,                    // uses every other coordinate.
 ```
+
 ### KeyActions
 
 Its a container type for `Sequence` of [KeyAction](#keyaction).
@@ -694,7 +746,7 @@ Then as defined, in-order, executes those [KeyAction(s)](#keyaction) which fulfi
 
 Upon exiting **Assist Focus Goal**, the current target will be deselected / cleared.
 
-**Note**: You can use every `Buff` and `Debuff` names on the `focus`/`party1` without being targeted. Just have to prefix it with `F_` example: `F_Mark of the Wild` which means `focus`/`party1` has `Mark of the Wild` buff active.
+**Note**: You can use every [Buff](#buff--debuff--general-boolean-condition-requirements) and [Debuff](#buff--debuff--general-boolean-condition-requirements) names on the `focus`/`party1` without being targeted. Just have to prefix it with `F_` example: `F_Mark of the Wild` which means `focus`/`party1` has `Mark of the Wild` buff active.
 
 e.g. of a Balance Druid
 ```json
@@ -808,6 +860,40 @@ e.g.
 }
 ```
 
+**Note**: that the default combat requirement can be overridden.
+
+e.g high level [Death Knight](./Json/class/DeathKnight_70_Unholy.json) 
+```json
+{
+    "Cost": 3.1,
+    "Name": "Horn of Winter",
+    "Key": "F4",
+    "InCombat": "i dont care",
+    "WhenUsable": true,
+    "Requirements": [
+        "!Horn of Winter || (CD_Horn of Winter <= GCD && TargetAlive && TargetHostile)",
+        "!Mounted"
+    ]
+},
+```
+
+e.g high level [Warlock](./Json/class/Warlock_66_Demo_pet_pull.json)
+```json
+{
+    "Name": "Life Tap",
+    "Cost": 3,
+    "Key": "N9",
+    "InCombat": "i dont care",
+    "Charge": 2,
+    "Requirements": [
+        "!Casting",
+        "Health% > TAP_MIN_MANA%",
+        "Mana% < TAP_MIN_MANA%"
+    ]
+},
+```
+
+
 ### Parallel Goals
 
 These `Sequence` of [KeyAction(s)](#keyaction) are done when not in combat and are not on cooldown. 
@@ -833,6 +919,7 @@ e.g.
     ]
 }
 ```
+
 ### Wait Goals
 
 These actions cause to wait while the [Requirement(s)](#requirement) are met, during this time the player going to be idle, until lowered cost action can be executed.
@@ -853,6 +940,7 @@ e.g.
 },
 ```
 ---
+
 ### NPC Goals
 
 These command are for vendoring and repair.
@@ -925,6 +1013,14 @@ In theory if there is a repeatable quest to collect items, you could set up a NP
     "Cost": 6
 }
 ```
+
+### Follow Route Goal
+
+Uses the [Path](#path) settings, follows the given route, uses pathfinding depending on the loaded [Class Configuration](#12-class-configuration)s [Mode](#modes).
+
+Meanwhile attempts to
+* find a new possible non blacklisted target
+* find a possible gathering node
 
 # Requirement
 
@@ -1327,7 +1423,7 @@ e.g.
 ---
 ### **Target Buff remaining time requirements**
 
-First in the `IntVariables` have to mention the buff icon id such as `TBuff_{your fancy name}: {icon_id}`
+First in the [IntVariables](#intvariables) have to mention the buff icon id such as `TBuff_{your fancy name}: {icon_id}`
 
 It is important, the addon keeps track of the **icon_id**! Not **spell_id**
 
@@ -1340,7 +1436,7 @@ e.g.
 ---
 ### **Focus Buff remaining time requirements**
 
-First in the `IntVariables` have to mention the buff icon id such as `FBuff_{your fancy name}: {icon_id}`
+First in the [IntVariables](#intvariables) have to mention the buff icon id such as `FBuff_{your fancy name}: {icon_id}`
 
 It is important, the addon keeps track of the **icon_id**! Not **spell_id**
 
@@ -1582,11 +1678,11 @@ Allow requirements about what buffs/debuffs you have or the target has or in gen
 
 e.g.
 ```json
-"Requirement": "!Well Fed"      // I am not well fed.
+"Requirement": "!Well Fed"         // I am not well fed.
 "Requirement": "not Thorns"        // I don't have the thorns buff.
 "Requirement": "AutoAttacking"     // "Auto Attack" spell is active.
 "Requirement": "Shooting"          // "Shoot" spell is active.
-"Requirement": "Items Broken"      // Some of my armor is broken (red).
+"Requirement": "Items Broken"      // Worn armor is broken (red).
 "Requirement": "BagFull"           // Inventory is full.
 "Requirement": "HasRangedWeapon"   // Has an item equipped at the ranged slot.
 "Requirement": "InMeleeRange"      // Determines if the target is in melee range (0-5 yard)
@@ -1775,11 +1871,11 @@ The available modes are:
 
 | Mode | Description |
 | --- | --- |
-| `"Grind"` | Default mode.<br>Follows the route. Attempts to find Non-Blacklist targets to kill.<br>(*if enabled*) Attempts to `"Loot"` and GatherCorpse nearby corpses.<br>(*if exists*) Executes `"Adhoc"`, `"NPC"`, `"Parallel"`, `"Pull"`, `"Combat"`, `"Wait"` Sequences |
-| `"AttendedGrind"` | Similair to `"Grind"`.<br>Navigation disabled.<br>The only difference is that **you** control the route, and select what target to kill. |
-| `"CorpseRun"` | Runs back to the corpse after dies.<br>Can be useful if you are farming an instance and die, the bot will run you back some or all of the way to the instance entrance. |
-| `"AttendedGather"` | Have to `Start Bot` under `Gather` tab and stay at `Gather` tab.<br>Follows the route and scan the minimap for the yellow nodes which indicate a herb or mining node.<br>Once one or more present, the navigation stops and alerts you by playing beeping sound!<br>**You** have to click at the herb/mine. In the `LogComponent` the necessary prompt going be shown to proceed.<br>**Important note**: `Falling` and `Jumping` means the same thing, if you lose the ground the bot going to take over the control! Be patient.<br>(*if exists*) Executes `"Adhoc"`, `"NPC"`, `"Parallel"`, `"Pull"`, `"Combat"`, `"Wait"` Sequences |
-| `"AssistFocus"` | Navigation disabled.<br>Requires a friendly `focus` to exists. Follows the `focus` target.<br>Once a friendly `focustarget` in 11 yard range attempts to Interact with it.<br>Once a hostile `focustarget` in-combat exists, attempts to assist it (kill it).<br>After leaving combat, (*if enabled*) attempts to Loot and GatherCorpse nearby corpses.<br>Works inside Instances.<br>(*if exists*) Executes `"Adhoc"`, `"Parallel"`, `"Pull"`, `"AssistFocus"`, `"Combat"`, `"Wait"` Sequences.<br>**Note**: In Vanilla `focus` dosen't exists, so instead using `party1`. Party is **required**. |
+| `"Grind"` | Default mode.<br>[Follows the Route](#follow-route-goal). Attempts to find Non-Blacklist targets to kill.<br>(*if enabled*) Attempts to `"Loot"` and GatherCorpse nearby corpses.<br>(*if exists*) Executes `"Adhoc"`, `"NPC"`, `"Parallel"`, `"Pull"`, `"Combat"`, `"Wait"` Sequences |
+| `"AttendedGrind"` | Similair to `"Grind"`.<br>Navigation([Follow Route Goal](#follow-route-goal)) disabled.<br>The only difference is that **you** control the route, and select what target to kill. |
+| `"CorpseRun"` | Relies on navigation. [Follows the Route](#follow-route-goal)<br>Runs back to the corpse after dies.<br>Can be useful if you are farming an instance and die, the bot will run you back some or all of the way to the instance entrance. |
+| `"AttendedGather"` | Have to `Start Bot` under `Gather` tab and stay at `Gather` tab.<br>[Follows the Route](#follow-route-goal) and scan the minimap for the yellow nodes which indicate a herb or mining node.<br>Once one or more present, the navigation stops and alerts you by playing beeping sound!<br>**You** have to click at the herb/mine. In the `LogComponent` the necessary prompt going be shown to proceed.<br>**Important note**: `Falling` and `Jumping` means the same thing, if you lose the ground the bot going to take over the control! Be patient.<br>(*if exists*) Executes `"Adhoc"`, `"NPC"`, `"Parallel"`, `"Pull"`, `"Combat"`, `"Wait"` Sequences |
+| `"AssistFocus"` | Navigation([Follow Route Goal](#follow-route-goal)) disabled.<br>Requires a friendly `focus` to exists. Follows the `focus` target.<br>Once a friendly `focustarget` in 11 yard range attempts to Interact with it.<br>Once a hostile `focustarget` in-combat exists, attempts to assist it (kill it).<br>After leaving combat, (*if enabled*) attempts to Loot and GatherCorpse nearby corpses.<br>Works inside Instances.<br>(*if exists*) Executes `"Adhoc"`, `"Parallel"`, `"Pull"`, `"AssistFocus"`, `"Combat"`, `"Wait"` Sequences.<br>**Note**: In Vanilla `focus` dosen't exists, so instead using `party1`. Party is **required**. |
 
 # User Interface
 
@@ -1805,6 +1901,8 @@ Control Panel\System and Security\Windows Defender Firewall - Advanced Settings
 The UI has the following components:
 
 ### Screenshot
+
+**Note**: Due the high resource usage of the component, it does not updated all the time, only when a given **Core** component requires it.
 
 ![Screenshot Component](images/screenshotComponent.png)
 

@@ -2,8 +2,8 @@
 
 public static class Mask
 {
-    public static readonly int[] M = new int[32]
-    {
+    public static readonly int[] M =
+    [
         _0,
         _1,
         _2,
@@ -36,7 +36,7 @@ public static class Mask
         _29,
         _30,
         _31,
-    };
+    ];
 
     public const int _0 = 1;
     public const int _1 = 1 << 1;

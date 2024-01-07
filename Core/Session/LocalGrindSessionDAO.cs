@@ -28,7 +28,7 @@ public sealed class LocalGrindSessionDAO : IGrindSessionDAO
             .OrderByDescending(grindingSession => grindingSession.SessionStart)
             .ToList();
 
-        if (sessions.Any())
+        if (sessions.Count != 0)
         {
             int[] expList = ExperienceProvider.Get(dataConfig);
             foreach (GrindSession? s in sessions)
