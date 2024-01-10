@@ -40,6 +40,8 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
     public Rectangle ScreenRect => screenRect;
     private Rectangle screenRect;
 
+    private readonly Vortice.RawRect monitorRect;
+
     public Image<Bgra32> ScreenImage { get; init; }
 
     private readonly SixLabors.ImageSharp.Configuration ContiguousJpegConfiguration
@@ -88,8 +90,6 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
         Bgra32Size = Unsafe.SizeOf<Bgra32>();
 
         GetRectangle(out screenRect);
-        windowedMode = IsWindowedMode(screenRect.Location);
-
         ScreenImage = new(ContiguousJpegConfiguration, screenRect.Width, screenRect.Height);
 
         MiniMapRect = new(0, 0, MiniMapSize, MiniMapSize);
@@ -112,8 +112,22 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
             if (result == Result.Ok &&
                 output.Description.Monitor == hMonitor)
             {
+                monitorRect = output.Description.DesktopCoordinates;
+                if ((monitorRect.Right - monitorRect.Left) != screenRect.Width ||
+                    (monitorRect.Bottom - monitorRect.Top) != screenRect.Height)
+                {
+                    windowedMode = true;
+                }
+                else
+                {
+                    windowedMode = false;
+                }
+
+                NormalizeScreenRect();
+
                 break;
             }
+            srcIdx++;
         } while (result != Result.Fail);
 
         output1 = output.QueryInterface<IDXGIOutput1>();
@@ -159,7 +173,9 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
 
         this.logger.LogInformation($"{screenRect} - " +
             $"Windowed Mode: {windowedMode} - " +
-            $"Scale: {DPI2PPI(GetDpi()):F2}");
+            $"Scale: {DPI2PPI(GetDpi()):F2} - " +
+            $"Monitor Rect: {monitorRect} - " +
+            $"Monitor Index: {srcIdx}");
     }
 
     public void Dispose()
@@ -219,6 +235,7 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
         if (windowedMode)
         {
             GetRectangle(out screenRect);
+            NormalizeScreenRect();
 
             // TODO: bounds check
             if (screenRect.X < 0 ||
@@ -381,5 +398,17 @@ public sealed class WowScreenDXGI : IWowScreen, IAddonDataProvider
     public void GetRectangle(out Rectangle rect)
     {
         NativeMethods.GetWindowRect(process.MainWindowHandle, out rect);
+    }
+
+    private void NormalizeScreenRect()
+    {
+        screenRect.X -= monitorRect.Left;
+        screenRect.Y -= monitorRect.Top;
+
+        if (screenRect.X < 0)
+            screenRect.X = 0;
+
+        if (screenRect.Y < 0)
+            screenRect.Y = 0;
     }
 }
