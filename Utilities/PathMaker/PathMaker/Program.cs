@@ -22,13 +22,13 @@ namespace PathMaker
                 coordinates.Add(new Vector2(float.Parse(split[0]), float.Parse(split[1])));
             }
 
-            var sorted = SortByNextClosesDistance(coordinates);
+            var sorted = SortByNextClosestDistance(coordinates);
 
             var text = JsonConvert.SerializeObject(sorted);
             File.WriteAllText(Path.Join(DataPath, outputFile), text);
         }
 
-        private static Vector2[] SortByNextClosesDistance(List<Vector2> nodes)
+        private static Vector2[] SortByNextClosestDistance(List<Vector2> nodes)
         {
             Stack<Vector2> output = new();
 
