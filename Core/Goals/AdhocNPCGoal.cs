@@ -333,6 +333,9 @@ public sealed class AdhocNPCGoal : GoapGoal, IGoapEventListener, IRouteProvider,
 
         Log($"Merchant window opened after {e}ms");
 
+        // Sell custom items via macro
+        input.PressRandom(key);
+
         e = wait.Until(TIMEOUT, gossipReader.MerchantWindowSelling);
         if (e >= 0)
         {

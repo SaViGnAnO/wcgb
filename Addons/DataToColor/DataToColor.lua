@@ -1019,43 +1019,46 @@ function DataToColor:delete(items)
 end
 
 function DataToColor:sell(items)
-    if UnitExists(DataToColor.C.unitTarget) then
-        local item = GetMerchantItemLink(1)
-        if item ~= nil then
-            DataToColor:Print("Selling items...")
-            DataToColor:OnMerchantShow()
-            local TotalPrice = 0
-            for b = 0, 4 do
-                for s = 1, GetContainerNumSlots(b) do
-                    local CurrentItemLink = GetContainerItemLink(b, s)
-                    if CurrentItemLink then
-                        for i = 1, #items, 1 do
-                            if strfind(CurrentItemLink, items[i]) then
-                                local _, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(CurrentItemLink)
-                                if (itemRarity < 2) then
-                                    local _, itemCount = GetContainerItemInfo(b, s)
-                                    TotalPrice = TotalPrice + (itemSellPrice * itemCount)
-                                    DataToColor:Print("Selling: ", itemCount, " ", CurrentItemLink,
-                                        " for ", GetCoinTextureString(itemSellPrice * itemCount))
-                                    UseContainerItem(b, s)
-                                else
-                                    DataToColor:Print("Item is not gray or common, not selling it: ", items[i])
-                                end
-                            end
+    if not UnitExists(DataToColor.C.unitTarget) then
+        DataToColor:Print("Merchant is not targetted.")
+        return
+    end
+
+    local item = GetMerchantItemLink(1)
+    if item == nil then
+        DataToColor:Print("Merchant is not open to sell to, please approach and open.")
+        return
+    end
+
+    DataToColor:Print("Selling items...")
+    DataToColor:OnMerchantShow()
+    local TotalPrice = 0
+
+    for b = 0, 4 do
+        for s = 1, GetContainerNumSlots(b) do
+            local CurrentItemLink = GetContainerItemLink(b, s)
+            if CurrentItemLink then
+                for i = 1, #items, 1 do
+                    if strfind(CurrentItemLink, items[i]) then
+                        local _, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(CurrentItemLink)
+                        if (itemRarity < 2) then
+                            local _, itemCount = GetContainerItemInfo(b, s)
+                            TotalPrice = TotalPrice + (itemSellPrice * itemCount)
+                            DataToColor:Print("Selling: ", itemCount, " ", CurrentItemLink,
+                                " for ", GetCoinTextureString(itemSellPrice * itemCount))
+                            UseContainerItem(b, s)
+                        else
+                            DataToColor:Print("Item is not gray or common, not selling it: ", items[i])
                         end
                     end
                 end
             end
-
-            if TotalPrice ~= 0 then
-                DataToColor:Print("Total Price for all items: ", GetCoinTextureString(TotalPrice))
-            else
-                DataToColor:Print("No grey items were sold.")
-            end
-        else
-            DataToColor:Print("Merchant is not open to sell to, please approach and open.")
         end
+    end
+
+    if TotalPrice ~= 0 then
+        DataToColor:Print("Total Price for all items: ", GetCoinTextureString(TotalPrice))
     else
-        DataToColor:Print("Merchant is not targetted.")
+        DataToColor:Print("No grey items were sold.")
     end
 end
