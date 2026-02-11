@@ -5,15 +5,29 @@
 -- Trigger between emitting game data and frame location data
 local SETUP_SEQUENCE = false
 -- Total number of data frames generated
-local NUMBER_OF_FRAMES = 114
+local NUMBER_OF_FRAMES = 170
 -- Set number of pixel rows
-local FRAME_ROWS = 1
+local FRAME_ROWS = 2
 -- Size of data squares in px. Varies based on rounding errors as well as dimension size. Use as a guideline, but not 100% accurate.
 local CELL_SIZE = 1 -- 1-9
 -- Spacing in px between data squares.
 local CELL_SPACING = 1 -- 0 or 1
 
 local GLOBAL_TIME_CELL = NUMBER_OF_FRAMES - 2
+
+-- Party frame layout (dedicated frames per member on second row)
+local PARTY_FRAME_START = 121 -- first party frame index (odd -> row 2)
+local PARTY_FRAME_STRIDE = 12 -- keeps all party frames on row 2 (odd indices only)
+local PARTY_FRAME_OFFSETS = {
+    MapFlags = 0,     -- mapId + inCombat + exists
+    NamePart1 = 1,    -- name bytes 1-3 (packed)
+    NamePart2 = 2,    -- name bytes 4-6 (packed)
+    Vitals = 3,       -- health%, power%, powerType
+    PosX = 4,         -- encoded X
+    PosY = 6,         -- encoded Y
+    Name = 8,         -- 20-bit hash of name
+    ClassLevel = 10,  -- level + classId
+}
 
 -- Dont modify values below
 
@@ -50,7 +64,10 @@ local DataToColor = unpack(Load)
 
 local band = bit.band
 local rshift = bit.rshift
+local lshift = bit.lshift
+local bxor = bit.bxor
 local floor = math.floor
+local min = math.min
 local max = math.max
 
 local strjoin = strjoin
@@ -99,6 +116,7 @@ local GetRuneType = GetRuneType
 
 local UnitBuff = UnitBuff
 local UnitDebuff = UnitDebuff
+local UnitAffectingCombat = UnitAffectingCombat
 local UnitXP = UnitXP
 local UnitXPMax = UnitXPMax
 local UnitExists = UnitExists
@@ -267,6 +285,7 @@ local TEXT_CMD_CHAT_EMOTE = 3
 local TEXT_CMD_CHAT_PARTY = 4
 local TEXT_CMD_TARGET_NAME = 5
 local TEXT_CMD_TOTEM_NAME = 6
+local TEXT_CMD_PARTY_NAME = 7
 
 -- Export for other files
 DataToColor.TextCommand = {
@@ -277,6 +296,7 @@ DataToColor.TextCommand = {
     ChatParty = TEXT_CMD_CHAT_PARTY,
     TargetName = TEXT_CMD_TARGET_NAME,
     TotemName = TEXT_CMD_TOTEM_NAME,
+    PartyName = TEXT_CMD_PARTY_NAME,
 }
 
 -- Pre-allocated free-list pool to avoid table allocation on push
@@ -334,6 +354,23 @@ function DataToColor:PushTotemName(name)
     DataToColor:PushText(TEXT_CMD_TOTEM_NAME, name)
 end
 
+function DataToColor:PushPartyName(slot, name)
+    if not slot or slot < 1 or slot > 4 then return end
+    if not name or name == "" then return end
+
+    -- Strip realm if present
+    local dashPos = name:find('-')
+    if dashPos then
+        name = name:sub(1, dashPos - 1)
+    end
+
+    local cached = DataToColor.partyNameCache[slot]
+    if cached == name then return end
+
+    DataToColor.partyNameCache[slot] = name
+    DataToColor:PushText(TEXT_CMD_PARTY_NAME, slot .. " " .. name)
+end
+
 function DataToColor:PushTargetName(name)
     DataToColor:PushText(TEXT_CMD_TARGET_NAME, name)
 end
@@ -348,6 +385,7 @@ function DataToColor:PushChatMessage(command, author, msg)
 end
 
 DataToColor.playerPetSummons = {}
+DataToColor.partyNameCache = {}
 
 DataToColor.playerBuffTime = DataToColor.struct:new(AURA_DURATION_ITERATION_FRAME_CHANGE_RATE)
 DataToColor.playerDebuffTime = DataToColor.struct:new(AURA_DURATION_ITERATION_FRAME_CHANGE_RATE)
@@ -360,6 +398,79 @@ DataToColor.customTrigger1 = {}
 DataToColor.sessionKillCount = 0
 
 local SpellQueueWindow = min(tonumber(DataToColor.SafeGetCVar(DataToColor.C.SpellQueueWindow, "0")) or 0, 999)
+
+local function EncodeCoord(value)
+    if not value then return 0 end
+    return min(1048575, max(0, floor(value * 1000000 + 0.5)))
+end
+
+local function HashName20(name)
+    if not name or name == "" then return 0 end
+
+    name = name:lower()
+
+    local hash = 2166136261
+    for i = 1, #name do
+        hash = band((bxor(hash, byte(name, i)) * 16777619), 0xFFFFFFFF)
+    end
+
+    return band(hash, 0xFFFFF)
+end
+
+local function GetPartyUnitPosition(unit)
+    local uiMapId = DataToColor.GetBestMapForUnit(unit)
+    if not uiMapId then
+        return nil, nil, nil
+    end
+
+    local pos = C_Map.GetPlayerMapPosition(uiMapId, unit)
+    if not pos then
+        return nil, nil, nil
+    end
+
+    return uiMapId, pos.x, pos.y
+end
+
+local function EncodePartyVitals(unit)
+    local healthMax = UnitHealthMax(unit) or 0
+    local health = UnitHealth(unit) or 0
+    local healthPct = 0
+    if healthMax > 0 then
+        healthPct = min(100, max(0, floor((health / healthMax) * 100 + 0.5)))
+    end
+
+    local powerType = UnitPowerType(unit) or 0
+    local powerMax = UnitPowerMax(unit, powerType) or 0
+    local power = UnitPower(unit, powerType) or 0
+    local powerPct = 0
+    if powerMax > 0 then
+        powerPct = min(100, max(0, floor((power / powerMax) * 100 + 0.5)))
+    end
+
+    -- PowerType enum is offset by 2 in C# to avoid negative values
+    local encodedPowerType = min(63, max(0, powerType + 2))
+
+    -- Pack into 20 bits: health(7) | power(7) | powerType(6)
+    return lshift(healthPct, 13) + lshift(powerPct, 6) + encodedPowerType
+end
+
+-- Packs up to three UTF-8 bytes from a string slice into a single integer.
+local function PackNameChunk(name, startIndex)
+    local b1 = byte(name, startIndex) or 0
+    local b2 = byte(name, startIndex + 1) or 0
+    local b3 = byte(name, startIndex + 2) or 0
+    return lshift(b1, 16) + lshift(b2, 8) + b3
+end
+
+local function GetAuraSpellId(isBuff, unit, index)
+    local _, _, _, _, _, _, spellId
+    if isBuff then
+        _, _, _, _, _, _, spellId = DataToColor:GetCachedBuff(unit, index)
+    else
+        _, _, _, _, _, _, spellId = DataToColor:GetCachedDebuff(unit, index)
+    end
+    return spellId or 0
+end
 
 function DataToColor:RegisterSlashCommands()
     DataToColor:RegisterChatCommand('dc', 'StartSetup')
@@ -1259,6 +1370,57 @@ function DataToColor:CreateFrames()
 
             -- Enemy summons (totems, pets summoned by hostile NPCs)
             Pixel(int, DataToColor.EnemySummonQueue:shift(globalTick) or 0, 110)
+
+            -- Party members: dedicated frames per member (all on second row)
+            -- Offsets per member: map flags, vitals, posX, posY, name hash, class/level
+            for partyIndex = 1, 4 do
+                local base = PARTY_FRAME_START + (partyIndex - 1) * PARTY_FRAME_STRIDE
+                local unit = DataToColor.C.unitPartyNames[partyIndex]
+                local exists = unit and UnitExists(unit)
+
+                local mapId, posX, posY = 0, 0, 0
+                local vitalsPayload = 0
+                local nameHash = 0
+                local classId = 0
+                local level = 0
+
+                if exists then
+                    mapId, posX, posY = GetPartyUnitPosition(unit)
+                    mapId = mapId or 0
+                    vitalsPayload = EncodePartyVitals(unit)
+                    local name = UnitName(unit)
+                    nameHash = HashName20(name)
+                    if name then
+                        DataToColor:PushPartyName(partyIndex, name)
+                        Pixel(int, PackNameChunk(name, 1), base + PARTY_FRAME_OFFSETS.NamePart1)
+                        Pixel(int, PackNameChunk(name, 4), base + PARTY_FRAME_OFFSETS.NamePart2)
+                    else
+                        Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart1)
+                        Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart2)
+                    end
+                    local _, classTag, classNumericId = UnitClass(unit)
+                    classId = classNumericId or DataToColor.C.CHARACTER_CLASS_MAP[classTag] or 0
+                    level = UnitLevel(unit) or 0
+                else
+                    -- Clear stale names when a slot is empty
+                    DataToColor:PushPartyName(partyIndex, "")
+                    Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart1)
+                    Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart2)
+                end
+
+                local inCombat = exists and UnitAffectingCombat(unit) and 1 or 0
+                local mapFlags = lshift(mapId, 2) + lshift(inCombat, 1) + (exists and 1 or 0)
+                Pixel(int, mapFlags, base + PARTY_FRAME_OFFSETS.MapFlags)
+
+                Pixel(int, vitalsPayload, base + PARTY_FRAME_OFFSETS.Vitals)
+                Pixel(int, exists and EncodeCoord(posX) or 0, base + PARTY_FRAME_OFFSETS.PosX)
+                Pixel(int, exists and EncodeCoord(posY) or 0, base + PARTY_FRAME_OFFSETS.PosY)
+                Pixel(int, nameHash, base + PARTY_FRAME_OFFSETS.Name)
+
+                -- Pack classId (lower 6 bits) and level (upper bits)
+                local classLevel = lshift(level, 6) + band(classId, 0x3F)
+                Pixel(int, classLevel, base + PARTY_FRAME_OFFSETS.ClassLevel)
+            end
 
             UpdateGlobalTime()
             -- NUMBER_OF_FRAMES - 1 reserved for validation

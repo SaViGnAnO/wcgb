@@ -136,6 +136,8 @@ const ADTGridTextLayer = new L.LayerGroup();
 const editableLayers = new L.FeatureGroup();
 
 var playerLayer;
+var partyLayerGroup;
+const partyMarkers = new Map();
 
 var recordPlayerPath = false;
 var currentRecordPlayerPath = '';
@@ -746,6 +748,64 @@ function createPlayer(latlng) {
         playerLayer = new L.marker(latlng, { icon: playerIcon })
         playerLayer.addTo(LeafletMap);
     });
+}
+
+function ensurePartyLayer() {
+    if (partyLayerGroup === undefined || partyLayerGroup === null) {
+        partyLayerGroup = L.layerGroup().addTo(LeafletMap);
+    }
+}
+
+function setPartyLocations(members) {
+    if (LeafletMap === undefined || LeafletMap === null) {
+        return;
+    }
+
+    ensurePartyLayer();
+
+    if (!Array.isArray(members) || members.length === 0) {
+        // Keep last known markers unless explicitly told to clear
+        return;
+    }
+
+    const seenIds = new Set();
+
+    members.forEach(m => {
+        if (!m || m.x === undefined || m.y === undefined) {
+            return;
+        }
+
+        const markerId = m.id ?? m.label ?? `${m.x}_${m.y}`;
+        const label = m.label || '';
+
+        const latlng = worldTolatLng(m.x, m.y);
+
+        let marker = partyMarkers.get(markerId);
+        if (marker == null) {
+            const badge = `<div style="width:18px;height:18px;background:#0dcaf0;border-radius:50%;color:#fff;font-size:11px;line-height:18px;text-align:center;border:1px solid #0aa4c2;">${label}</div>`;
+            const icon = L.divIcon({
+                className: 'party-icon',
+                iconSize: [18, 18],
+                html: badge,
+            });
+
+            marker = new L.marker(latlng, { icon: icon, title: label });
+            marker.addTo(partyLayerGroup);
+            partyMarkers.set(markerId, marker);
+        } else {
+            marker.setLatLng(latlng);
+        }
+
+        seenIds.add(markerId);
+    });
+
+    // Drop markers that were not present in the latest payload
+    for (const [id, marker] of partyMarkers.entries()) {
+        if (!seenIds.has(id)) {
+            partyLayerGroup.removeLayer(marker);
+            partyMarkers.delete(id);
+        }
+    }
 }
 
 function setPlayerLocation(x, y, dir) {
@@ -1852,7 +1912,16 @@ function removeCustomMarker(markerId) {
 }
 
 // Expose to global scope for popup button
-window.removeCustomMarker = removeCustomMarker;
+const globalTarget = typeof globalThis !== 'undefined' ? globalThis : window;
+globalTarget.removeCustomMarker = removeCustomMarker;
+
+// Expose map helpers for Blazor interop (works in module or script contexts)
+globalTarget.setPartyLocations = setPartyLocations;
+globalTarget.setPlayerLocation = setPlayerLocation;
+console.debug('[leaflet-watch] interop ready', {
+    setPartyLocations: typeof globalTarget.setPartyLocations,
+    setPlayerLocation: typeof globalTarget.setPlayerLocation
+});
 
 ///////////////////////////////////////////////////
 

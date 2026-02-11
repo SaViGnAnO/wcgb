@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 
 using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
 
 using System;
 using System.Collections.Frozen;
@@ -26,7 +27,58 @@ public enum Mode
     AttendedGather = 2,
     AttendedGrind = 3,
     AssistFocus = 4,
-    AutoGather = 5
+    AutoGather = 5,
+    PartyFollow = 6
+}
+
+public enum PartyFollowMode
+{
+    Name = 0,
+    PartySlot = 1,
+    Focus = 2
+}
+
+public enum CoordinateSource
+{
+    Map = 0,
+    World = 1
+}
+
+public enum PartyRole
+{
+    Tank = 0,
+    Healer = 1,
+    DPS = 2
+}
+
+[Flags]
+public enum FollowRadiusEnforcements
+{
+    None = 0,
+    LineOfSight = 1,
+    FallbackToRegroup = 2
+}
+
+public sealed class PartyOptions
+{
+    public PartyFollowMode Mode { get; set; } = PartyFollowMode.Focus;
+
+    public CoordinateSource CoordinateSource { get; set; } = CoordinateSource.Map;
+
+    [JsonConverter(typeof(StringEnumConverter))]
+    public PartyRole Role { get; set; } = PartyRole.DPS;
+
+    public float FollowRadius { get; set; } = 4f;
+
+    public float CombatLeash { get; set; } = 30f;
+
+    public float RepathIntervalSeconds { get; set; } = 1f;
+
+    public FollowRadiusEnforcements Enforcements { get; set; } = FollowRadiusEnforcements.None;
+
+    public string LeaderName { get; set; } = string.Empty;
+
+    public int LeaderSlot { get; set; } = 1;
 }
 
 
@@ -50,6 +102,7 @@ public sealed partial class ClassConfiguration
     public int MouseTurnStepPixels { get; set; } = 30;
     public int MouseTurnStepDelayMs { get; set; } = 6;
     public bool AllowPvP { get; set; }
+    public bool TargetNeutral { get; set; }
     public bool AutoPetAttack { get; set; } = true;
 
     // Keeping this for backward compatibility
@@ -62,6 +115,8 @@ public sealed partial class ClassConfiguration
     public PathSettings[] Paths { get; set; } = [];
 
     public Mode Mode { get; set; } = Mode.Grind;
+
+    public PartyOptions Party { get; set; } = new();
 
     public bool GatheringMode => Mode is Mode.AttendedGather or Mode.AutoGather;
 

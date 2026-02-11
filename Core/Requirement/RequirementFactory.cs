@@ -131,8 +131,9 @@ public sealed partial class RequirementFactory
             { "TargetCastingSpell", CreateTargetCastingSpell },
             { "Form", CreateForm },
             { "Race", CreateRace },
+            { "PartyRole", CreatePartyRole },
             { "Equipment:", CreateEquipment },
-            { "Spell", CreateSpell },
+            { "Spell:", CreateSpell },
             { "Talent", CreateTalent },
             { "Trigger:", CreateTrigger },
             { "Usable:", CreateUsable },
@@ -199,6 +200,10 @@ public sealed partial class RequirementFactory
 
             { "MenuOpen", bits.GameMenuWindowShown },
             { "ChatInputVisible", bits.ChatInputIsVisible },
+            { "AnyBagOpen", bits.AnyBagOpen },
+            { "CharacterFrameOpen", bits.CharacterFrameOpen },
+            { "SpellBookFrameOpen", bits.SpellBookFrameOpen },
+            { "FriendsFrameOpen", bits.FriendsFrameOpen },
 
             // Corpse-based abilities
             { "CannibalizeCorpse", CannibalizeCorpseNearby },
@@ -206,6 +211,18 @@ public sealed partial class RequirementFactory
             // Totem detection
             { "DamageTakenFromTotem", totemDetector.HasDamagingTotem }
         };
+
+        void BindRole(string key, PartyRole role)
+        {
+            boolVariables.TryAdd(key, () => classConfig.Party.Role == role);
+        }
+
+        BindRole("PartyRoleTank", PartyRole.Tank);
+        BindRole("PartyRoleHealer", PartyRole.Healer);
+        BindRole("PartyRoleDPS", PartyRole.DPS);
+        BindRole("RoleTank", PartyRole.Tank);
+        BindRole("RoleHealer", PartyRole.Healer);
+        BindRole("RoleDPS", PartyRole.DPS);
 
         bool CannibalizeCorpseNearby() =>
             corpseTracker.HasCannibalizeCorpseNearby(playerReader.WorldPos, playerReader.WorldMapArea);
@@ -271,6 +288,8 @@ public sealed partial class RequirementFactory
             { "SessionSeconds", sessionStat._Seconds },
             { "SessionMinutes", sessionStat._Minutes },
             { "SessionHours", sessionStat._Hours },
+
+            { "PartyRole", () => (int)classConfig.Party.Role },
 
             { "Level", playerReader.Level._Value },
             { "ExpPerc", playerReader._PlayerXpPercent },
@@ -1083,6 +1102,22 @@ public sealed partial class RequirementFactory
                 LogMessage = s
             };
         }
+    }
+
+    private Requirement CreatePartyRole(ReadOnlySpan<char> requirement)
+    {
+        // 'PartyRole:_ROLE_'
+        int sep = requirement.IndexOf(SEP1);
+        PartyRole role = Enum.Parse<PartyRole>(requirement[(sep + 1)..], true);
+
+        bool f() => classConfig.Party.Role == role;
+        string s() => $"PartyRole {classConfig.Party.Role}";
+
+        return new Requirement
+        {
+            HasRequirement = f,
+            LogMessage = s
+        };
     }
 
     private Requirement CreateEquipment(ReadOnlySpan<char> requirement)
