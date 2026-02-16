@@ -352,6 +352,34 @@ The app reads the game state using small blocks of color shown at the top of the
     * Complete `5. Frame Configuration` steps again
     * Click on `Auto` -> `Start` [Validate FrameConfiguration](../../wiki/Validating-FrameConfiguration)
 
+### Command-line Configuration Overrides
+
+`run.bat` forwards all arguments to `dotnet run`, so any setting from `BlazorServer/appsettings.json` can be overridden using `--Section:Property=Value` syntax.
+
+**Example:**
+
+```
+run.bat --Reader:Type=WGC --Pathing:Mode=Local --Reader:UseGpu=true
+```
+
+| Section | Property | Type | Default | Valid Values | Description |
+|---|---|---|---|---|---|
+| `Process` | `Id` | int | `-1` | Any process ID | WoW process ID. `-1` for auto-detect |
+| `Reader` | `Type` | string | `DXGI` | `DXGI`, `WGC` | Screen reader type. `WGC` = Windows Graphics Capture (supports background window) |
+| `Reader` | `UseGpu` | bool | `false` | `true`, `false` | Use GPU acceleration for screen reading |
+| `Pathing` | `Mode` | string | `RemoteV3` | `Local`, `RemoteV1`, `RemoteV3` | Pathfinding mode |
+| `Pathing` | `hostv1` | string | `localhost` | hostname/IP | RemoteV1 pathing server host |
+| `Pathing` | `portv1` | int | `5001` | port number | RemoteV1 pathing server port |
+| `Pathing` | `hostv3` | string | `127.0.0.1` | hostname/IP | RemoteV3 pathing server host |
+| `Pathing` | `portv3` | int | `47111` | port number | RemoteV3 pathing server port |
+| `Diagnostics` | `Enabled` | bool | `false` | `true`, `false` | Enable diagnostic mode |
+| `Overlay` | `Enabled` | bool | `false` | `true`, `false` | Enable NPC overlay |
+| `Overlay` | `ShowTargeting` | bool | `false` | `true`, `false` | Show targeting overlay |
+| `Overlay` | `ShowSkinning` | bool | `false` | `true`, `false` | Show skinning overlay |
+| `Overlay` | `ShowTargetVsAdd` | bool | `false` | `true`, `false` | Show target vs add overlay |
+
+These properties can also be edited directly in `BlazorServer/appsettings.json`.
+
 ## 6. BlazorServer should restart and show the dashboard page.
 
 ## 7 Optional - Running HeadlessServer
@@ -659,6 +687,7 @@ The class configuration controls all aspects of bot behavior. Here's why each se
 | `"AllowPvP"` | Should engage combat with the opposite faction | true | `false` |
 | `"TargetNeutral"` | Should detect neutral (yellow) nameplates in addition to hostile (red). Enable for starting zones (levels 1-5) where mobs are neutral. | true | `false` |
 | `"AutoPetAttack"` | Should the pet start attacking as soon as possible | true | `true` |
+| `"CrossZoneSearch"` | Allow NPC search across zone boundaries for cross-zone routes | true | `false` |
 | `"KeyboardOnly"` | Use keyboard to interact only. See [KeyboardOnly](#keyboardonly) | false | `true` |
 | --- | --- | --- | --- |
 | `"PathFilename"` | [Path](#path) to use while alive | **false** or [Multiple Paths with Requirements](#multiple-paths-with-requirements) | `""` |
@@ -1632,6 +1661,8 @@ Short Path Example:
 
 This is rather an **experimental** feature, and it is known to be unstable but it provides an easy way to add npc interaction in the **current zone**.
 
+With `CrossZoneSearch` enabled, the **current zone** restriction can be bypassed.
+
 The key limitation is the navigation, it is known to get stuck with [Indoors](https://wowwiki-archive.fandom.com/wiki/API_IsIndoors) npcs be are of that!
 
 The `"KeyAction.Name"` has a special formula which can be followed to have different behaviour!
@@ -2125,6 +2156,70 @@ e.g.
 ```json
 "Requirement": "Race:Orc"          // Must be `Orc` race
 "Requirement": "!Race:Human"    // Shoudn't be `Human` race
+```
+
+---
+### **Target requirements**
+
+If the current target must be a specific creature type use this requirement. Uses the DBC creature database to look up the target's type by NPC ID.
+
+Useful for abilities that only work on certain creature types (e.g. Paladin's Exorcism on Undead/Demon).
+
+Formula: `Target:[type]`
+
+| type |
+| --- |
+| Beast |
+| Dragonkin |
+| Demon |
+| Elemental |
+| Giant |
+| Undead |
+| Humanoid |
+| Critter |
+| Mechanical |
+| NotSpecified |
+| Totem |
+| NonCombatPet |
+| GasCloud |
+
+e.g.
+```json
+"Requirement": "Target:Undead"                          // Target must be Undead
+"Requirement": "Target:Demon"                             // Target must be Demon
+"Requirement": "!Target:Humanoid"                         // Target must not be Humanoid
+"Requirement": "Target:Undead || Target:Demon"            // Target is Undead or Demon
+```
+
+---
+### **MouseOver requirements**
+
+If the current mouseover must be a specific creature type use this requirement. Uses the DBC creature database to look up the mouseover's type by NPC ID.
+
+Formula: `MouseOver:[type]`
+
+| type |
+| --- |
+| Beast |
+| Dragonkin |
+| Demon |
+| Elemental |
+| Giant |
+| Undead |
+| Humanoid |
+| Critter |
+| Mechanical |
+| NotSpecified |
+| Totem |
+| NonCombatPet |
+| GasCloud |
+
+e.g.
+```json
+"Requirement": "MouseOver:Undead"                          // MouseOver must be Undead
+"Requirement": "MouseOver:Demon"                           // MouseOver must be Demon
+"Requirement": "!MouseOver:Humanoid"                       // MouseOver must not be Humanoid
+"Requirement": "MouseOver:Undead || MouseOver:Demon"       // MouseOver is Undead or Demon
 ```
 
 ---
