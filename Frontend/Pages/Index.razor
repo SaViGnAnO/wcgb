@@ -85,7 +85,9 @@
                 {
                     <PathSelectorComponent Hide="@(botController.IsBotActive)" />
                 }
-                else if (!botController.IsBotActive && botController.ClassConfig!.Mode != Mode.AttendedGrind)
+                else if (!botController.IsBotActive &&
+                    botController.ClassConfig!.Mode != Mode.AttendedGrind &&
+                    botController.ClassConfig!.Mode != Mode.PartyFollow)
                 {
                     if (botController.ClassConfig!.Paths.Length > 1)
                     {

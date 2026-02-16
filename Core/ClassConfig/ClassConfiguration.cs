@@ -104,6 +104,7 @@ public sealed partial class ClassConfiguration
     public bool AllowPvP { get; set; }
     public bool TargetNeutral { get; set; }
     public bool AutoPetAttack { get; set; } = true;
+    public bool CrossZoneSearch { get; set; }
 
     // Keeping this for backward compatibility
     // The following properties are consolidated under PathSettings
@@ -185,6 +186,8 @@ public sealed partial class ClassConfiguration
 
     public void Initialise(IServiceProvider sp, Dictionary<int, string> overridePathFile)
     {
+        bool requiresPath = Mode != Mode.PartyFollow;
+
         Approach.Key = Interact.Key;
         AutoAttack.Key = Interact.Key;
 
@@ -193,7 +196,8 @@ public sealed partial class ClassConfiguration
 
         RecordInt globalTime = sp.GetRequiredService<AddonReader>().GlobalTime;
 
-        if (Paths == Array.Empty<PathSettings>() &&
+        if (requiresPath &&
+            Paths == Array.Empty<PathSettings>() &&
             !string.IsNullOrEmpty(PathFilename))
         {
             overridePathFile.TryGetValue(0, out string? firstoverridePath);
@@ -235,7 +239,7 @@ public sealed partial class ClassConfiguration
             }
         }
 
-        for (int i = 0; i < Paths.Length; i++)
+        for (int i = 0; requiresPath && i < Paths.Length; i++)
         {
             PathSettings settings = Paths[i];
 
@@ -262,7 +266,7 @@ public sealed partial class ClassConfiguration
             settings.Init(globalTime, playerReader, i);
         }
 
-        if (Paths.Select(x => x.Id).Distinct().Count() != Paths.Length)
+        if (requiresPath && Paths.Select(x => x.Id).Distinct().Count() != Paths.Length)
         {
             throw new ArgumentException("One ore more PathSettings share the same Id. Must be unique!");
         }
