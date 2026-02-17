@@ -134,7 +134,6 @@ local NUM_BAG_SLOTS = NUM_BAG_SLOTS
 local ContainerIDToInventoryID = DataToColor.ContainerIDToInventoryID
 local GetContainerItemLink = DataToColor.GetContainerItemLink
 local PickupContainerItem = DataToColor.PickupContainerItem
-local GetInventoryItemLink = GetInventoryItemLink
 local DeleteCursorItem = DeleteCursorItem
 local GetMerchantItemLink = GetMerchantItemLink
 local GetItemInfo = GetItemInfo
