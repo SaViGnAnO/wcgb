@@ -30,6 +30,19 @@ jobs:
       - name: Publish HeadlessServer
         run: dotnet publish HeadlessServer/HeadlessServer.csproj --configuration Release --output artifacts/HeadlessServer
 
+      - name: Include Json data
+        shell: pwsh
+        run: |
+          Copy-Item -Path Json -Destination artifacts/BlazorServer/Json -Recurse -Force
+          Copy-Item -Path Json -Destination artifacts/HeadlessServer/Json -Recurse -Force
+
+      - name: Write default data_config
+        shell: pwsh
+        run: |
+          $defaultDataConfig = @{ Version = 14; Root = ".\\Json" } | ConvertTo-Json -Compress
+          Set-Content artifacts/BlazorServer/data_config.json $defaultDataConfig
+          Set-Content artifacts/HeadlessServer/data_config.json $defaultDataConfig
+
       - name: Package artifacts
         shell: pwsh
         run: |
