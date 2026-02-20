@@ -40,6 +40,7 @@ public readonly record struct PartyLeaderSnapshot(
     {
         waypoint = Vector3.Zero;
         world = Vector3.Zero;
+        bool sameUiMap = MapId == currentArea.UIMapId;
 
         if (source == CoordinateSource.World)
         {
@@ -52,6 +53,11 @@ public readonly record struct PartyLeaderSnapshot(
 
             if (HasMap)
             {
+                if (!sameUiMap)
+                {
+                    return false;
+                }
+
                 world = WorldMapAreaDB.ToWorld_FlipXY(MapPosition, currentArea);
                 waypoint = world;
                 return true;
@@ -62,6 +68,18 @@ public readonly record struct PartyLeaderSnapshot(
 
         if (HasMap)
         {
+            if (!sameUiMap)
+            {
+                if (!HasWorld)
+                {
+                    return false;
+                }
+
+                world = WorldPosition;
+                waypoint = WorldPosition;
+                return true;
+            }
+
             waypoint = MapPosition;
             world = HasWorld
                 ? WorldPosition
