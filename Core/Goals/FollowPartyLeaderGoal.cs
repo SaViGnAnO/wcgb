@@ -16,6 +16,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
 {
     private const int LosFailureThreshold = 5;
     private const float DefaultCost = 20f;
+    private const double StatusLogIntervalSeconds = 5d;
 
     public override float Cost => DefaultCost;
 
@@ -29,6 +30,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
     private readonly AddonBits bits;
 
     private DateTime lastPathRequest;
+    private DateTime lastStatusLog;
     private Vector3 lastKnownLeaderWorld;
     private int losFailureCount;
 
@@ -59,6 +61,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
     public override void OnEnter()
     {
         lastPathRequest = DateTime.MinValue;
+        lastStatusLog = DateTime.MinValue;
         losFailureCount = 0;
         navigation.OnNoPathFound += HandleNoPath;
         navigation.OnPathCalculated += ResetFailures;
@@ -78,6 +81,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
         PartyLeaderSnapshot snapshot = leaderProvider.GetSnapshot(classConfiguration);
         if (!snapshot.HasPosition)
         {
+            LogStatus("PartyFollow idle: no leader snapshot/position (Mode={Mode})", Party.Mode);
             navigation.StopMovement();
             wait.Update();
             return;
@@ -85,6 +89,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
 
         if (!snapshot.TryGetWaypoint(Party.CoordinateSource, playerReader.WorldMapArea, out Vector3 waypoint, out Vector3 leaderWorld))
         {
+            LogStatus("PartyFollow idle: waypoint unavailable (Source={CoordinateSource}, MapId={MapId})", Party.CoordinateSource, playerReader.UIMapId.Value);
             navigation.StopMovement();
             wait.Update();
             return;
@@ -97,6 +102,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
 
         if (leaderInCombat)
         {
+            LogStatus("PartyFollow combat leash: dist={Distance:F1}, leash={Leash:F1}", distanceToLeader, Party.CombatLeash);
             EnforceCombatLeash(distanceToLeader, waypoint);
             wait.Update();
             navigation.Update();
@@ -105,6 +111,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
 
         if (bits.Combat())
         {
+            LogStatus("PartyFollow idle: player in combat, waiting for normal combat goals");
             navigation.StopMovement();
             wait.Update();
             return;
@@ -112,11 +119,17 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
 
         if (distanceToLeader > Party.FollowRadius && ShouldRepath())
         {
+            LogStatus("PartyFollow repath: dist={Distance:F1}, radius={Radius:F1}, waypoint={Waypoint}", distanceToLeader, Party.FollowRadius, waypoint.ToStringF());
             RequestPath(waypoint);
         }
         else if (distanceToLeader <= Party.FollowRadius)
         {
+            LogStatus("PartyFollow hold: within radius (dist={Distance:F1}, radius={Radius:F1})", distanceToLeader, Party.FollowRadius);
             navigation.StopMovement();
+        }
+        else
+        {
+            LogStatus("PartyFollow wait: repath cooldown active (dist={Distance:F1}, interval={Interval:F1}s)", distanceToLeader, Party.RepathIntervalSeconds);
         }
 
         wait.Update();
@@ -191,5 +204,22 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
 
         RequestPath(waypoint);
         ResetFailures();
+    }
+
+    private void LogStatus(string message, params object?[] args)
+    {
+        if (!logger.IsEnabled(LogLevel.Debug))
+        {
+            return;
+        }
+
+        DateTime now = DateTime.UtcNow;
+        if ((now - lastStatusLog).TotalSeconds < StatusLogIntervalSeconds)
+        {
+            return;
+        }
+
+        lastStatusLog = now;
+        logger.LogDebug(message, args);
     }
 }
