@@ -18,6 +18,7 @@ namespace Core;
 public sealed partial class PlayerDirection
 {
     private const bool debug = false;
+    private const float HalfTurnStabilityBand = 0.20f;
 
     public const int DefaultIgnoreDistance = 10;
 
@@ -25,6 +26,7 @@ public sealed partial class PlayerDirection
     private readonly ConfigurableInput input;
     private readonly PlayerReader playerReader;
     private readonly CancellationToken token;
+    private bool lastTurnLeft = true;
 
     public PlayerDirection(ILogger<PlayerDirection> logger,
         CancellationTokenSource<GoapAgent> cts,
@@ -80,7 +82,20 @@ public sealed partial class PlayerDirection
 
     private bool ShouldTurnLeft(float desiredDirection)
     {
-        return (Tau + desiredDirection - playerReader.Direction) % Tau < PI;
+        float delta = (Tau + desiredDirection - playerReader.Direction) % Tau;
+
+        // When heading error is close to 180° (PI), tiny frame-to-frame jitter in
+        // player.Direction can flip the computed shortest turn side each update.
+        // That causes left/right key oscillation and the bot fails to commit to a turn.
+        // In this band we keep the previous turn side to make turning deterministic.
+        if (Abs(delta - PI) <= HalfTurnStabilityBand)
+        {
+            return lastTurnLeft;
+        }
+
+        bool turnLeft = delta < PI;
+        lastTurnLeft = turnLeft;
+        return turnLeft;
     }
 
     private int TurnDuration(float targetDir)
