@@ -939,6 +939,56 @@ function DataToColor:CreateFrames()
     local unitsTargetTick = -999
 
     local function updateFrames()
+        -- Localize high-frequency globals/API inside this function to avoid
+        -- capturing many file-scope upvalues (Lua upvalue limit).
+        local band = bit.band
+        local lshift = bit.lshift
+        local floor = math.floor
+        local ceil = math.ceil
+        local min = math.min
+        local max = math.max
+
+        local GetTime = _G.GetTime
+        local GetPlayerFacing = _G.GetPlayerFacing
+        local GetUnitSpeed = _G.GetUnitSpeed
+        local UnitLevel = _G.UnitLevel
+        local UnitHealthMax = _G.UnitHealthMax
+        local UnitHealth = _G.UnitHealth
+        local UnitPowerMax = _G.UnitPowerMax
+        local UnitPower = _G.UnitPower
+        local GetRuneCooldown = _G.GetRuneCooldown
+        local GetRuneType = _G.GetRuneType
+        local UnitBuff = _G.UnitBuff
+        local UnitDebuff = _G.UnitDebuff
+        local UnitAffectingCombat = _G.UnitAffectingCombat
+        local UnitXP = _G.UnitXP
+        local UnitXPMax = _G.UnitXPMax
+        local UnitExists = _G.UnitExists
+        local UnitClassification = _G.UnitClassification
+        local UnitClass = _G.UnitClass
+        local UnitName = _G.UnitName
+        local GetMoney = _G.GetMoney
+        local GetComboPoints = _G.GetComboPoints
+        local GetNumLootItems = _G.GetNumLootItems
+        local GetNetStats = _G.GetNetStats
+
+        local UnitLevelSafe = DataToColor.UnitLevelSafe
+        local GetContainerNumFreeSlots = DataToColor.GetContainerNumFreeSlots
+        local GetContainerNumSlots = DataToColor.GetContainerNumSlots
+        local GetContainerItemInfo = DataToColor.GetContainerItemInfo
+
+        -- Keep party layout constants local to this function to avoid extra upvalues.
+        local PARTY_FRAME_START_LOCAL = 121
+        local PARTY_FRAME_STRIDE_LOCAL = 12
+        local PARTY_OFFSET_MAP_FLAGS = 0
+        local PARTY_OFFSET_NAME_PART_1 = 1
+        local PARTY_OFFSET_NAME_PART_2 = 2
+        local PARTY_OFFSET_VITALS = 3
+        local PARTY_OFFSET_POS_X = 4
+        local PARTY_OFFSET_POS_Y = 6
+        local PARTY_OFFSET_NAME = 8
+        local PARTY_OFFSET_CLASS_LEVEL = 10
+
         if not SETUP_SEQUENCE and globalTick >= initPhase then
             -- Ensure globalTime is past the C# FullReset threshold (Value <= 3)
             -- so queue data is processed immediately when rendering starts.
@@ -1418,7 +1468,7 @@ function DataToColor:CreateFrames()
             -- Party members: dedicated frames per member (all on second row)
             -- Offsets per member: map flags, vitals, posX, posY, name hash, class/level
             for partyIndex = 1, 4 do
-                local base = PARTY_FRAME_START + (partyIndex - 1) * PARTY_FRAME_STRIDE
+                local base = PARTY_FRAME_START_LOCAL + (partyIndex - 1) * PARTY_FRAME_STRIDE_LOCAL
                 local unit = DataToColor.C.unitPartyNames[partyIndex]
                 local exists = unit and UnitExists(unit)
 
@@ -1436,11 +1486,11 @@ function DataToColor:CreateFrames()
                     nameHash = HashName20(name)
                     if name then
                         DataToColor:PushPartyName(partyIndex, name)
-                        Pixel(int, PackNameChunk(name, 1), base + PARTY_FRAME_OFFSETS.NamePart1)
-                        Pixel(int, PackNameChunk(name, 4), base + PARTY_FRAME_OFFSETS.NamePart2)
+                        Pixel(int, PackNameChunk(name, 1), base + PARTY_OFFSET_NAME_PART_1)
+                        Pixel(int, PackNameChunk(name, 4), base + PARTY_OFFSET_NAME_PART_2)
                     else
-                        Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart1)
-                        Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart2)
+                        Pixel(int, 0, base + PARTY_OFFSET_NAME_PART_1)
+                        Pixel(int, 0, base + PARTY_OFFSET_NAME_PART_2)
                     end
                     local _, classTag, classNumericId = UnitClass(unit)
                     classId = classNumericId or DataToColor.C.CHARACTER_CLASS_MAP[classTag] or 0
@@ -1448,22 +1498,22 @@ function DataToColor:CreateFrames()
                 else
                     -- Clear stale names when a slot is empty
                     DataToColor:PushPartyName(partyIndex, "")
-                    Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart1)
-                    Pixel(int, 0, base + PARTY_FRAME_OFFSETS.NamePart2)
+                    Pixel(int, 0, base + PARTY_OFFSET_NAME_PART_1)
+                    Pixel(int, 0, base + PARTY_OFFSET_NAME_PART_2)
                 end
 
                 local inCombat = exists and UnitAffectingCombat(unit) and 1 or 0
                 local mapFlags = lshift(mapId, 2) + lshift(inCombat, 1) + (exists and 1 or 0)
-                Pixel(int, mapFlags, base + PARTY_FRAME_OFFSETS.MapFlags)
+                Pixel(int, mapFlags, base + PARTY_OFFSET_MAP_FLAGS)
 
-                Pixel(int, vitalsPayload, base + PARTY_FRAME_OFFSETS.Vitals)
-                Pixel(int, exists and EncodeCoord(posX) or 0, base + PARTY_FRAME_OFFSETS.PosX)
-                Pixel(int, exists and EncodeCoord(posY) or 0, base + PARTY_FRAME_OFFSETS.PosY)
-                Pixel(int, nameHash, base + PARTY_FRAME_OFFSETS.Name)
+                Pixel(int, vitalsPayload, base + PARTY_OFFSET_VITALS)
+                Pixel(int, exists and EncodeCoord(posX) or 0, base + PARTY_OFFSET_POS_X)
+                Pixel(int, exists and EncodeCoord(posY) or 0, base + PARTY_OFFSET_POS_Y)
+                Pixel(int, nameHash, base + PARTY_OFFSET_NAME)
 
                 -- Pack classId (lower 6 bits) and level (upper bits)
                 local classLevel = lshift(level, 6) + band(classId, 0x3F)
-                Pixel(int, classLevel, base + PARTY_FRAME_OFFSETS.ClassLevel)
+                Pixel(int, classLevel, base + PARTY_OFFSET_CLASS_LEVEL)
             end
 
             UpdateGlobalTime()
