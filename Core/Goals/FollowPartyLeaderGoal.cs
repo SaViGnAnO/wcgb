@@ -9,6 +9,7 @@ using SharedLib.Data;
 
 using System;
 using System.Numerics;
+using static System.MathF;
 
 namespace Core.Goals;
 
@@ -120,6 +121,7 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
         if (distanceToLeader > Party.FollowRadius && ShouldRepath())
         {
             LogStatus("PartyFollow repath: dist={Distance:F1}, radius={Radius:F1}, waypoint={Waypoint}", distanceToLeader, Party.FollowRadius, waypoint.ToStringF());
+            LogRepathDetails(distanceToLeader, leaderWorld, waypoint);
             RequestPath(waypoint);
         }
         else if (distanceToLeader <= Party.FollowRadius)
@@ -164,6 +166,47 @@ public sealed class FollowPartyLeaderGoal : GoapGoal
         Span<Vector3> points = stackalloc Vector3[1] { waypoint };
         navigation.SetWayPoints(points);
         navigation.ResetStuckParameters();
+    }
+
+    private void LogRepathDetails(float distanceToLeader, Vector3 leaderWorld, Vector3 waypoint)
+    {
+        if (!logger.IsEnabled(LogLevel.Debug))
+        {
+            return;
+        }
+
+        Vector3 playerWorld = playerReader.WorldPos;
+        Vector3 waypointWorld = ResolveWaypointWorldForLog(waypoint);
+
+        Vector3 playerMap = WorldMapAreaDB.ToMap_FlipXY(playerWorld, playerReader.WorldMapArea);
+        Vector3 waypointMap = WorldMapAreaDB.ToMap_FlipXY(waypointWorld, playerReader.WorldMapArea);
+
+        float targetHeading = DirectionCalculator.CalculateMapHeading(playerMap, waypointMap);
+        float currentHeading = playerReader.Direction;
+
+        float diff1 = Abs(Tau + targetHeading - currentHeading) % Tau;
+        float diff2 = Abs(targetHeading - currentHeading - Tau) % Tau;
+        float headingDelta = Min(diff1, diff2);
+
+        logger.LogDebug(
+            "PartyFollow repath detail: dist={Distance:F2} | playerW={PlayerWorld} | leaderW={LeaderWorld} | waypointW={WaypointWorld} | targetHeading={TargetHeading:F3} | currentHeading={CurrentHeading:F3} | headingDelta={HeadingDelta:F3}",
+            distanceToLeader,
+            playerWorld.ToStringF(),
+            leaderWorld.ToStringF(),
+            waypointWorld.ToStringF(),
+            targetHeading,
+            currentHeading,
+            headingDelta);
+    }
+
+    private Vector3 ResolveWaypointWorldForLog(Vector3 waypoint)
+    {
+        if (waypoint.X is >= 0 and <= 100 && waypoint.Y is >= 0 and <= 100)
+        {
+            return WorldMapAreaDB.ToWorld_FlipXY(waypoint, playerReader.WorldMapArea);
+        }
+
+        return waypoint;
     }
 
     private void HandleNoPath()

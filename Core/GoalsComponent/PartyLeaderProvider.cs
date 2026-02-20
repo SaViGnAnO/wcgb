@@ -68,22 +68,20 @@ public readonly record struct PartyLeaderSnapshot(
 
         if (HasMap)
         {
-            if (!sameUiMap)
+            if (HasWorld)
             {
-                if (!HasWorld)
-                {
-                    return false;
-                }
-
                 world = WorldPosition;
                 waypoint = WorldPosition;
                 return true;
             }
 
+            if (!sameUiMap)
+            {
+                return false;
+            }
+
             waypoint = MapPosition;
-            world = HasWorld
-                ? WorldPosition
-                : WorldMapAreaDB.ToWorld_FlipXY(MapPosition, currentArea);
+            world = WorldMapAreaDB.ToWorld_FlipXY(MapPosition, currentArea);
             return true;
         }
 
