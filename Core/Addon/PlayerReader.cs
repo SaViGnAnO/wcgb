@@ -26,9 +26,14 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
     private const int PartyNamePart2Offset = 2;
     private const int PartyVitalsOffset = 3;
     private const int PartyPosXOffset = 4;
+    private const int PartyPosZOffset = 5;
     private const int PartyPosYOffset = 6;
     private const int PartyNameOffset = 8;
     private const int PartyClassLevelOffset = 10;
+    private const int PlayerWorldZOffset = 112;
+
+    private const int EncodedZBias = 500_000;
+    private const float EncodedZScale = 100f;
 
     private const int PartyPayloadMask = 0xFFFFF;
 
@@ -38,6 +43,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
     {
         public int MapId;
         public float MapX;
+        public float WorldZ;
         public float MapY;
         public bool Exists;
         public bool InCombat;
@@ -57,7 +63,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
         public bool HasCoordinates => MapId != 0 && (MapX != 0 || MapY != 0);
     }
 
-    public readonly record struct PartyMemberDebug(int Slot, bool Exists, bool InCombat, int MapId, float MapX, float MapY, int NameHash);
+    public readonly record struct PartyMemberDebug(int Slot, bool Exists, bool InCombat, int MapId, float MapX, float MapY, float WorldZ, int NameHash);
 
     public readonly record struct PartyMemberStatus(
         int Slot,
@@ -65,6 +71,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
         bool InCombat,
         int MapId,
         float MapX,
+        float WorldZ,
         float MapY,
         string Name,
         int NameHash,
@@ -81,18 +88,18 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
     public IReadOnlyList<PartyMemberDebug> PartyDebug =>
     [
-        new PartyMemberDebug(1, partyMembers[0].Exists, partyMembers[0].InCombat, partyMembers[0].MapId, partyMembers[0].MapX, partyMembers[0].MapY, partyMembers[0].NameHash),
-        new PartyMemberDebug(2, partyMembers[1].Exists, partyMembers[1].InCombat, partyMembers[1].MapId, partyMembers[1].MapX, partyMembers[1].MapY, partyMembers[1].NameHash),
-        new PartyMemberDebug(3, partyMembers[2].Exists, partyMembers[2].InCombat, partyMembers[2].MapId, partyMembers[2].MapX, partyMembers[2].MapY, partyMembers[2].NameHash),
-        new PartyMemberDebug(4, partyMembers[3].Exists, partyMembers[3].InCombat, partyMembers[3].MapId, partyMembers[3].MapX, partyMembers[3].MapY, partyMembers[3].NameHash)
+        new PartyMemberDebug(1, partyMembers[0].Exists, partyMembers[0].InCombat, partyMembers[0].MapId, partyMembers[0].MapX, partyMembers[0].MapY, partyMembers[0].WorldZ, partyMembers[0].NameHash),
+        new PartyMemberDebug(2, partyMembers[1].Exists, partyMembers[1].InCombat, partyMembers[1].MapId, partyMembers[1].MapX, partyMembers[1].MapY, partyMembers[1].WorldZ, partyMembers[1].NameHash),
+        new PartyMemberDebug(3, partyMembers[2].Exists, partyMembers[2].InCombat, partyMembers[2].MapId, partyMembers[2].MapX, partyMembers[2].MapY, partyMembers[2].WorldZ, partyMembers[2].NameHash),
+        new PartyMemberDebug(4, partyMembers[3].Exists, partyMembers[3].InCombat, partyMembers[3].MapId, partyMembers[3].MapX, partyMembers[3].MapY, partyMembers[3].WorldZ, partyMembers[3].NameHash)
     ];
 
     public IReadOnlyList<PartyMemberStatus> PartyStatus =>
     [
-        new PartyMemberStatus(1, partyMembers[0].Exists, partyMembers[0].InCombat, partyMembers[0].MapId, partyMembers[0].MapX, partyMembers[0].MapY, partyMembers[0].Name, partyMembers[0].NameHash, partyMembers[0].ClassId, partyMembers[0].Level, partyMembers[0].HealthPercent, partyMembers[0].PowerPercent, (PowerType)partyMembers[0].PowerType, partyMembers[0].BuffSpellId1, partyMembers[0].BuffSpellId2, partyMembers[0].BuffSpellId3, partyMembers[0].DebuffSpellId1, partyMembers[0].DebuffSpellId2),
-        new PartyMemberStatus(2, partyMembers[1].Exists, partyMembers[1].InCombat, partyMembers[1].MapId, partyMembers[1].MapX, partyMembers[1].MapY, partyMembers[1].Name, partyMembers[1].NameHash, partyMembers[1].ClassId, partyMembers[1].Level, partyMembers[1].HealthPercent, partyMembers[1].PowerPercent, (PowerType)partyMembers[1].PowerType, partyMembers[1].BuffSpellId1, partyMembers[1].BuffSpellId2, partyMembers[1].BuffSpellId3, partyMembers[1].DebuffSpellId1, partyMembers[1].DebuffSpellId2),
-        new PartyMemberStatus(3, partyMembers[2].Exists, partyMembers[2].InCombat, partyMembers[2].MapId, partyMembers[2].MapX, partyMembers[2].MapY, partyMembers[2].Name, partyMembers[2].NameHash, partyMembers[2].ClassId, partyMembers[2].Level, partyMembers[2].HealthPercent, partyMembers[2].PowerPercent, (PowerType)partyMembers[2].PowerType, partyMembers[2].BuffSpellId1, partyMembers[2].BuffSpellId2, partyMembers[2].BuffSpellId3, partyMembers[2].DebuffSpellId1, partyMembers[2].DebuffSpellId2),
-        new PartyMemberStatus(4, partyMembers[3].Exists, partyMembers[3].InCombat, partyMembers[3].MapId, partyMembers[3].MapX, partyMembers[3].MapY, partyMembers[3].Name, partyMembers[3].NameHash, partyMembers[3].ClassId, partyMembers[3].Level, partyMembers[3].HealthPercent, partyMembers[3].PowerPercent, (PowerType)partyMembers[3].PowerType, partyMembers[3].BuffSpellId1, partyMembers[3].BuffSpellId2, partyMembers[3].BuffSpellId3, partyMembers[3].DebuffSpellId1, partyMembers[3].DebuffSpellId2)
+        new PartyMemberStatus(1, partyMembers[0].Exists, partyMembers[0].InCombat, partyMembers[0].MapId, partyMembers[0].MapX, partyMembers[0].WorldZ, partyMembers[0].MapY, partyMembers[0].Name, partyMembers[0].NameHash, partyMembers[0].ClassId, partyMembers[0].Level, partyMembers[0].HealthPercent, partyMembers[0].PowerPercent, (PowerType)partyMembers[0].PowerType, partyMembers[0].BuffSpellId1, partyMembers[0].BuffSpellId2, partyMembers[0].BuffSpellId3, partyMembers[0].DebuffSpellId1, partyMembers[0].DebuffSpellId2),
+        new PartyMemberStatus(2, partyMembers[1].Exists, partyMembers[1].InCombat, partyMembers[1].MapId, partyMembers[1].MapX, partyMembers[1].WorldZ, partyMembers[1].MapY, partyMembers[1].Name, partyMembers[1].NameHash, partyMembers[1].ClassId, partyMembers[1].Level, partyMembers[1].HealthPercent, partyMembers[1].PowerPercent, (PowerType)partyMembers[1].PowerType, partyMembers[1].BuffSpellId1, partyMembers[1].BuffSpellId2, partyMembers[1].BuffSpellId3, partyMembers[1].DebuffSpellId1, partyMembers[1].DebuffSpellId2),
+        new PartyMemberStatus(3, partyMembers[2].Exists, partyMembers[2].InCombat, partyMembers[2].MapId, partyMembers[2].MapX, partyMembers[2].WorldZ, partyMembers[2].MapY, partyMembers[2].Name, partyMembers[2].NameHash, partyMembers[2].ClassId, partyMembers[2].Level, partyMembers[2].HealthPercent, partyMembers[2].PowerPercent, (PowerType)partyMembers[2].PowerType, partyMembers[2].BuffSpellId1, partyMembers[2].BuffSpellId2, partyMembers[2].BuffSpellId3, partyMembers[2].DebuffSpellId1, partyMembers[2].DebuffSpellId2),
+        new PartyMemberStatus(4, partyMembers[3].Exists, partyMembers[3].InCombat, partyMembers[3].MapId, partyMembers[3].MapX, partyMembers[3].WorldZ, partyMembers[3].MapY, partyMembers[3].Name, partyMembers[3].NameHash, partyMembers[3].ClassId, partyMembers[3].Level, partyMembers[3].HealthPercent, partyMembers[3].PowerPercent, (PowerType)partyMembers[3].PowerType, partyMembers[3].BuffSpellId1, partyMembers[3].BuffSpellId2, partyMembers[3].BuffSpellId3, partyMembers[3].DebuffSpellId1, partyMembers[3].DebuffSpellId2)
     ];
 
     public PlayerReader(
@@ -372,6 +379,8 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
         UIErrorTime.Update(reader);
 
+        WorldPosZ = DecodeEncodedZ(reader.GetInt(PlayerWorldZOffset));
+
         UpdatePartyMembers(reader);
 
         if (UIError != UI_ERROR.NONE)
@@ -431,6 +440,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
             if (!exists)
             {
                 state.MapX = 0;
+                state.WorldZ = 0;
                 state.MapY = 0;
                 state.Name = string.Empty;
                 state.NameHash = 0;
@@ -449,6 +459,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
             // C_Map returns normalized coordinates (0-1); multiply by 100 to align with map-percentage expectations.
             state.MapX = provider.GetInt(baseIndex + PartyPosXOffset) / 1_000_000f * 100f;
+            state.WorldZ = DecodeEncodedZ(provider.GetInt(baseIndex + PartyPosZOffset));
             state.MapY = provider.GetInt(baseIndex + PartyPosYOffset) / 1_000_000f * 100f;
 
             int namePart1 = provider.GetInt(baseIndex + PartyNamePart1Offset);
@@ -484,7 +495,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
             return false;
         }
 
-        Vector3 map = new(state.MapX, state.MapY, 0);
+        Vector3 map = new(state.MapX, state.MapY, state.WorldZ);
 
         if (worldMapAreaDB.TryGet(state.MapId, out _))
         {
@@ -497,6 +508,11 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
         }
 
         return snapshot.HasPosition;
+    }
+
+    private static float DecodeEncodedZ(int encoded)
+    {
+        return (encoded - EncodedZBias) / EncodedZScale;
     }
 
     private static int HashName20(string name)

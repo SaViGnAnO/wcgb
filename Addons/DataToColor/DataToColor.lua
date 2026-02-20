@@ -24,6 +24,7 @@ local PARTY_FRAME_OFFSETS = {
     NamePart2 = 2,    -- name bytes 4-6 (packed)
     Vitals = 3,       -- health%, power%, powerType
     PosX = 4,         -- encoded X
+    PosZ = 5,         -- encoded world Z (signed, fixed)
     PosY = 6,         -- encoded Y
     Name = 8,         -- 20-bit hash of name
     ClassLevel = 10,  -- level + classId
@@ -401,6 +402,18 @@ DataToColor.sessionKillCount = 0
 local function EncodeCoord(value)
     if not value then return 0 end
     return min(1048575, max(0, floor(value * 1000000 + 0.5)))
+end
+
+local ENCODED_Z_SCALE = 100
+local ENCODED_Z_BIAS = 500000
+local ENCODED_Z_MAX = 1000000
+
+local function EncodeSignedZ(value)
+    if not value then
+        return ENCODED_Z_BIAS
+    end
+
+    return min(ENCODED_Z_MAX, max(0, floor(value * ENCODED_Z_SCALE + ENCODED_Z_BIAS + 0.5)))
 end
 
 local function HashName20(name)
@@ -955,6 +968,7 @@ function DataToColor:CreateFrames()
         local PARTY_OFFSET_NAME_PART_2 = 2
         local PARTY_OFFSET_VITALS = 3
         local PARTY_OFFSET_POS_X = 4
+        local PARTY_OFFSET_POS_Z = 5
         local PARTY_OFFSET_POS_Y = 6
         local PARTY_OFFSET_NAME = 8
         local PARTY_OFFSET_CLASS_LEVEL = 10
@@ -967,6 +981,7 @@ function DataToColor:CreateFrames()
             local exists = unit and UnitExists(unit)
 
             local mapId, posX, posY = 0, 0, 0
+            local worldZ = 0
             local vitalsPayload = 0
             local nameHash = 0
             local classId = 0
@@ -975,6 +990,10 @@ function DataToColor:CreateFrames()
             if exists then
                 mapId, posX, posY = GetPartyUnitPosition(unit)
                 mapId = mapId or 0
+                if _G.UnitPosition then
+                    local _, _, z = _G.UnitPosition(unit)
+                    worldZ = z or 0
+                end
                 vitalsPayload = EncodePartyVitals(unit)
                 local name = UnitName(unit)
                 nameHash = HashName20(name)
@@ -1002,6 +1021,7 @@ function DataToColor:CreateFrames()
 
             Pixel(int, vitalsPayload, base + PARTY_OFFSET_VITALS)
             Pixel(int, exists and EncodeCoord(posX) or 0, base + PARTY_OFFSET_POS_X)
+            Pixel(int, exists and EncodeSignedZ(worldZ) or ENCODED_Z_BIAS, base + PARTY_OFFSET_POS_Z)
             Pixel(int, exists and EncodeCoord(posY) or 0, base + PARTY_OFFSET_POS_Y)
             Pixel(int, nameHash, base + PARTY_OFFSET_NAME)
 
@@ -1024,6 +1044,7 @@ function DataToColor:CreateFrames()
         local GetTime = _G.GetTime
         local GetPlayerFacing = _G.GetPlayerFacing
         local GetUnitSpeed = _G.GetUnitSpeed
+        local UnitPosition = _G.UnitPosition
         local UnitLevel = _G.UnitLevel
         local UnitHealthMax = _G.UnitHealthMax
         local UnitHealth = _G.UnitHealth
@@ -1522,6 +1543,13 @@ function DataToColor:CreateFrames()
 
             local _, playerRunSpeed = GetUnitSpeed(DataToColor.C.unitPlayer)
             Pixel(float, playerRunSpeed or 0, 111)
+
+            local playerWorldZ = 0
+            if UnitPosition then
+                local _, _, z = UnitPosition(DataToColor.C.unitPlayer)
+                playerWorldZ = z or 0
+            end
+            Pixel(int, EncodeSignedZ(playerWorldZ), 112)
 
             updatePartyFrames()
 
