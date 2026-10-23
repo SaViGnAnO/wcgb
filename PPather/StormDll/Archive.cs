@@ -15,49 +15,67 @@ internal sealed class Archive
 
     private readonly FrozenSet<string> fileList;
 
-    private static readonly bool Is64Bit = Environment.Is64BitProcess;
-
     public Archive(string file, out bool open, uint prio, OpenArchive flags)
     {
-        open = Is64Bit
-            ? StormDllx64.SFileOpenArchive(file, prio, flags, out handle)
-            : StormDllx86.SFileOpenArchive(file, prio, flags, out handle);
+        open = StormDll.SFileOpenArchive(file, prio, flags, out handle);
 
         if (!open)
             return;
 
-        using MpqFileStream mpq = GetStream("(listfile)".AsSpan());
-        int length = (int)mpq.Length;
+        // MPQ paths are ASCII; Ordinal avoids ICU-backed hashing on every lookup.
+        HashSet<string> fileList = new(StringComparer.OrdinalIgnoreCase);
 
-        HashSet<string> fileList = new(StringComparer.InvariantCultureIgnoreCase);
-
-        if (length <= MpqFileStream.MaxStackLimit)
+        // A stub archive can carry an empty or missing (listfile) - Cataclysm
+        // ships a 1 KB OldWorld.MPQ placeholder like this. That is not a failure:
+        // the archive simply contributes no files, and ArchiveSet drops it. Only
+        // an archive that opens AND lists something is worth searching.
+        try
         {
-            Span<byte> stackBytes = stackalloc byte[length];
-            mpq.Read(stackBytes);
-            ParseFileLines(stackBytes, fileList);
+            using MpqFileStream mpq = GetStream("(listfile)".AsSpan());
+            int length = (int)mpq.Length;
+
+            if (length <= MpqFileStream.MaxStackLimit)
+            {
+                Span<byte> stackBytes = stackalloc byte[length];
+                mpq.Read(stackBytes);
+                ParseFileLines(stackBytes, fileList);
+            }
+            else
+            {
+                var pooler = ArrayPool<byte>.Shared;
+                byte[] array = pooler.Rent(length);
+                try
+                {
+                    Span<byte> spanBytes = array.AsSpan(0, length);
+                    mpq.Read(spanBytes);
+                    ParseFileLines(spanBytes, fileList);
+                }
+                finally
+                {
+                    pooler.Return(array);
+                }
+            }
         }
-        else
+        catch (IOException)
         {
-            var pooler = ArrayPool<byte>.Shared;
-            byte[] array = pooler.Rent(length);
-            try
-            {
-                Span<byte> spanBytes = array.AsSpan(0, length);
-                mpq.Read(spanBytes);
-                ParseFileLines(spanBytes, fileList);
-            }
-            finally
-            {
-                pooler.Return(array);
-            }
+            // No (listfile) at all - same as an empty one.
         }
 
-        if (fileList.Count == 0)
-            throw new InvalidOperationException($"{nameof(fileList)} contains no elements!");
-
-        this.fileList = fileList.ToFrozenSet(StringComparer.InvariantCultureIgnoreCase);
+        this.fileList = fileList.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     }
+
+    /// <summary>Number of files this archive lists; 0 means it holds nothing searchable.</summary>
+    public int FileCount => fileList.Count;
+
+    /// <summary>The names this archive lists, for overlap tests against patch archives.</summary>
+    public FrozenSet<string> Files => fileList;
+
+    /// <summary>
+    /// Chains a patch archive onto this one, so reads through this handle return
+    /// the patched content. Patches must be attached in ascending build order.
+    /// </summary>
+    public bool AttachPatch(string patchFile) =>
+        StormDll.SFileOpenPatchArchive(handle, patchFile, nint.Zero, 0);
 
     public static void ParseFileLines(ReadOnlySpan<byte> data, HashSet<string> fileList)
     {
@@ -79,9 +97,6 @@ internal sealed class Archive
 
             start += end + 1;
         }
-
-        if (fileList.Count == 0)
-            throw new InvalidOperationException("File contains no lines.");
     }
 
 
@@ -100,9 +115,7 @@ internal sealed class Archive
 
     public bool SFileCloseArchive()
     {
-        return Is64Bit
-            ? StormDllx64.SFileCloseArchive(handle)
-            : StormDllx86.SFileCloseArchive(handle);
+        return StormDll.SFileCloseArchive(handle);
     }
 
     [Obsolete("Use GetStream instead.")]
@@ -122,23 +135,17 @@ internal sealed class Archive
 
     public static bool SFileReadFile(IntPtr fileHandle, Span<byte> buffer, long toRead, out long read)
     {
-        return Is64Bit
-            ? StormDllx64.SFileReadFile(fileHandle, buffer, toRead, out read)
-            : StormDllx86.SFileReadFile(fileHandle, buffer, toRead, out read);
+        return StormDll.SFileReadFile(fileHandle, buffer, toRead, out read);
     }
 
     public static bool SFileCloseFile(IntPtr fileHandle)
     {
-        return Is64Bit
-            ? StormDllx64.SFileCloseFile(fileHandle)
-            : StormDllx86.SFileCloseFile(fileHandle);
+        return StormDll.SFileCloseFile(fileHandle);
     }
 
     public static long SFileGetFileSize(IntPtr fileHandle, out long fileSizeHigh)
     {
-        return Is64Bit
-            ? StormDllx64.SFileGetFileSize(fileHandle, out fileSizeHigh)
-            : StormDllx86.SFileGetFileSize(fileHandle, out fileSizeHigh);
+        return StormDll.SFileGetFileSize(fileHandle, out fileSizeHigh);
     }
 
     public static uint SFileSetFilePointer(IntPtr fileHandle,
@@ -146,9 +153,7 @@ internal sealed class Archive
         ref uint plFilePosHigh,
         SeekOrigin origin)
     {
-        return Is64Bit
-            ? StormDllx64.SFileSetFilePointer(fileHandle, filePos, ref plFilePosHigh, origin)
-            : StormDllx86.SFileSetFilePointer(fileHandle, filePos, ref plFilePosHigh, origin);
+        return StormDll.SFileSetFilePointer(fileHandle, filePos, ref plFilePosHigh, origin);
     }
 
     public static bool SFileOpenFileEx(
@@ -162,8 +167,6 @@ internal sealed class Archive
         Encoding.UTF8.GetBytes(fileName, utf8Bytes);
         utf8Bytes[^1] = 0;
 
-        return Is64Bit
-            ? StormDllx64.SFileOpenFileEx(archiveHandle, utf8Bytes, searchScope, out fileHandle)
-            : StormDllx86.SFileOpenFileEx(archiveHandle, utf8Bytes, searchScope, out fileHandle);
+        return StormDll.SFileOpenFileEx(archiveHandle, utf8Bytes, searchScope, out fileHandle);
     }
 }

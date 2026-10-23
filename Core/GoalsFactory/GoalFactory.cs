@@ -39,10 +39,20 @@ public static class GoalFactory
         services.AddScoped<CancellationTokenSource<GoapAgent>>();
         services.AddScoped<IGrindSessionHandler, GrindSessionHandler>();
 
+        // Always on, unlike the bag and coin trackers below: a level-up is one line every
+        // few hours, not the per-item chatter LogBagChanges exists to silence.
+        services.AddScoped<LevelChangeTracker>();
+
         if (classConfig.LogBagChanges)
+        {
             services.AddScoped<IBagChangeTracker, BagChangeTracker>();
+            services.AddScoped<IMoneyChangeTracker, MoneyChangeTracker>();
+        }
         else
+        {
             services.AddScoped<IBagChangeTracker, NoBagChangeTracker>();
+            services.AddScoped<IMoneyChangeTracker, NoMoneyChangeTracker>();
+        }
 
 
         if (classConfig.Mode != Mode.Grind)
@@ -78,9 +88,13 @@ public static class GoalFactory
         services.AddScoped<CastingHandlerInterruptWatchdog>();
         services.AddScoped<CastingHandler>();
         services.AddScoped<StuckDetector>();
+        services.AddScoped<ApproachThrottle>();
         services.AddScoped<CombatTracker>();
         services.AddScoped<SafeSpotCollector>();
         services.AddScoped<IPartyLeaderProvider, PartyLeaderProvider>();
+        services.AddScoped<ThreatFinder>();
+        services.AddScoped<TrainerPlanner>();
+        services.AddScoped<ActionBarPopulator>();
 
         var playerReader = sp.GetRequiredService<PlayerReader>();
 
@@ -145,6 +159,7 @@ public static class GoalFactory
             services.AddScoped<GoapGoal, ApproachTargetGoal>();
             services.AddScoped<GoapGoal, AssistFocusGoal>();
             services.AddScoped<GoapGoal, CombatGoal>();
+            services.AddScoped<GoapGoal, FindThreatGoal>();
 
             ResolveLootAndSkin(services, classConfig);
 
@@ -202,6 +217,7 @@ public static class GoalFactory
             services.AddScoped<GoapGoal, ApproachTargetGoal>();
             AddFleeGoal(services, classConfig);
             services.AddScoped<GoapGoal, CombatGoal>();
+            services.AddScoped<GoapGoal, FindThreatGoal>();
 
             if (classConfig.WrongZone.ZoneId > 0)
             {
@@ -391,11 +407,22 @@ public static class GoalFactory
 
             services.AddKeyedScoped<PathSettings>(i,
                 (IServiceProvider sp, object? key) =>
-                GetPathSettings(
-                    sp.GetRequiredService<ILogger>(),
-                    sp.GetRequiredService<ClassConfiguration>().Paths[(int)key!],
-                    sp.GetRequiredService<DataConfig>(),
-                    sp.GetRequiredService<WorldMapAreaDB>()));
+                {
+                    PathSettings setting =
+                        sp.GetRequiredService<ClassConfiguration>().Paths[(int)key!];
+
+                    // A generated path builds itself the first time its goal actually runs
+                    // - see FollowRouteGoal.EnsureGenerated. Doing it here built every
+                    // path in the profile at session start, including the ones whose
+                    // requirements can never pass for this character.
+                    return setting.Generate != null
+                        ? setting
+                        : GetPathSettings(
+                            sp.GetRequiredService<ILogger>(),
+                            setting,
+                            sp.GetRequiredService<DataConfig>(),
+                            sp.GetRequiredService<WorldMapAreaDB>());
+                });
 
             services.AddScoped<GoapGoal>(sp =>
                 ActivatorUtilities.CreateInstance<FollowRouteGoal>(sp,

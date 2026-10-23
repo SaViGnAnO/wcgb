@@ -52,9 +52,9 @@ public sealed partial class HeadlessServer
         botController.ToggleBotStatus();
     }
 
-    public void RunLoadOnly(ParserResult<RunOptions> options)
+    public bool RunLoadOnly(ParserResult<RunOptions> options)
     {
-        botController.LoadClassProfile(options.Value.ClassConfig!);
+        return botController.LoadClassProfile(options.Value.ClassConfig!);
     }
 
     private void InitState()
@@ -93,7 +93,11 @@ public sealed partial class HeadlessServer
             bag != bagReader.BagItems.Count ||
             keyBindings != keyBindingsReader.Count);
 
-        LogInitStateEnd(logger, (float)GetElapsedTime(startTime).TotalSeconds);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            float elapsed = (float)GetElapsedTime(startTime).TotalSeconds;
+            LogInitStateEnd(logger, elapsed);
+        }
     }
 
     #region Logging

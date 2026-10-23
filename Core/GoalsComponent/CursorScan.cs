@@ -50,13 +50,10 @@ public sealed partial class CursorScan : IDisposable
     {
         classifier.Classify(out CursorType current, out _);
 
-        for (int i = 0; i < targetCursors.Length; i++)
+        if (targetCursors.Contains(current))
         {
-            if (current == targetCursors[i])
-            {
-                foundCursor = current;
-                return true;
-            }
+            foundCursor = current;
+            return true;
         }
 
         foundCursor = CursorType.None;
@@ -100,8 +97,7 @@ public sealed partial class CursorScan : IDisposable
         int stepsTaken = 0;
         int directionChanges = 0;
 
-        if (logger.IsEnabled(LogLevel.Debug))
-            LogScanStart(logger, targetCursor.ToStringF(), center, stepSize, maxRadius);
+        LogScanStart(logger, targetCursor, center, stepSize, maxRadius);
 
         while (Math.Max(Math.Abs(x), Math.Abs(y)) * stepSize <= maxRadius)
         {
@@ -121,8 +117,7 @@ public sealed partial class CursorScan : IDisposable
                 classifier.Classify(out CursorType cls, out double similarity);
                 if (cls == targetCursor)
                 {
-                    if (logger.IsEnabled(LogLevel.Information))
-                        LogScanFound(logger, targetCursor.ToStringF(), scanPoint, similarity);
+                    LogScanFound(logger, targetCursor, scanPoint, similarity);
                     foundPosition = scanPoint;
                     return true;
                 }
@@ -146,8 +141,7 @@ public sealed partial class CursorScan : IDisposable
             }
         }
 
-        if (logger.IsEnabled(LogLevel.Debug))
-            LogScanNotFound(logger, targetCursor.ToStringF());
+        LogScanNotFound(logger, targetCursor);
         foundPosition = default;
         return false;
     }
@@ -213,8 +207,7 @@ public sealed partial class CursorScan : IDisposable
                 {
                     if (cls == targetCursors[i])
                     {
-                        if (logger.IsEnabled(LogLevel.Information))
-                            LogScanFound(logger, cls.ToStringF(), scanPoint, similarity);
+                        LogScanFound(logger, cls, scanPoint, similarity);
                         foundCursor = cls;
                         foundPosition = scanPoint;
                         return true;
@@ -251,19 +244,19 @@ public sealed partial class CursorScan : IDisposable
         EventId = 0180,
         Level = LogLevel.Debug,
         Message = "Cursor scan start: searching for {cursorType} from {center} (step={stepSize}, maxRadius={maxRadius})")]
-    static partial void LogScanStart(ILogger logger, string cursorType, Point center, int stepSize, int maxRadius);
+    static partial void LogScanStart(ILogger logger, CursorType cursorType, Point center, int stepSize, int maxRadius);
 
     [LoggerMessage(
         EventId = 0181,
         Level = LogLevel.Information,
         Message = "Cursor scan found: {cursorType} at {position} (similarity={similarity:F1}%)")]
-    static partial void LogScanFound(ILogger logger, string cursorType, Point position, double similarity);
+    static partial void LogScanFound(ILogger logger, CursorType cursorType, Point position, double similarity);
 
     [LoggerMessage(
         EventId = 0182,
         Level = LogLevel.Debug,
         Message = "Cursor scan complete: {cursorType} not found")]
-    static partial void LogScanNotFound(ILogger logger, string cursorType);
+    static partial void LogScanNotFound(ILogger logger, CursorType cursorType);
 
     #endregion
 }

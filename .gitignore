@@ -31,8 +31,8 @@ bld/
 # Visual Studio Code
 .vscode/
 
-# Claude AI files
-.claude/
+# Claude local AI files
+.claude/*.local.*
 
 # Uncomment if you have tasks that create the project's static files in wwwroot
 #wwwroot/
@@ -287,6 +287,10 @@ Json/cap/*.jpg
 
 # leaflet files
 Json/leaflet/**/*.png
+Json/leaflet/**/*.webp
+
+# offline leaflet tile bundle (built by scripts/upload-leaflet-r2.py --zip)
+Json/leaflet/*.zip
 
 # Configs
 **/frame_config.json
@@ -307,3 +311,15 @@ PathingAPI/data_config.json
 
 # BenchmarkDotNet artifacts
 **/BenchmarkDotNet.Artifacts/
+# Runtime-baked navmesh tile cache
+Json/PathInfo/navmesh/
+# Local-only working files (benchmark reports, scratch) - never committed
+local/
+
+# Locally built StormLib for macOS/Linux (scripts/build-stormlib-unix.sh).
+# Host-specific native binary; the Windows DLLs are committed, these are not.
+PPather/MPQ/libstorm.dylib
+PPather/MPQ/libstorm.so
+
+# Rendered route pictures from `run.ps1 routegen --output`. Regenerated in seconds.
+CoreTests/routegen-out/

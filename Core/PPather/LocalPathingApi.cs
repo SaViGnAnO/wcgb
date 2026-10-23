@@ -4,6 +4,8 @@ using PPather;
 using PPather.Data;
 using PPather.Graph;
 
+using SharedLib;
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -16,6 +18,8 @@ namespace Core;
 
 public sealed class LocalPathingApi : IPPather
 {
+    public bool PathsAreSmoothed => service.Engine == PathingEngine.Navmesh;
+
     private const bool debug = false;
 
     private const SearchStrategy searchStrategy = SearchStrategy.A_Star_With_Model_Avoidance;
@@ -23,6 +27,12 @@ public sealed class LocalPathingApi : IPPather
     private readonly ILogger<LocalPathingApi> logger;
 
     private readonly PPatherService service;
+
+    /// <summary>
+    /// Serializes the pather's two-call search protocol. Route generation added a second
+    /// caller on a different thread; before that the single caller made this unnecessary.
+    /// </summary>
+    private readonly System.Threading.Lock searchLock = new();
 
     private DateTime lastSave;
 
@@ -47,11 +57,21 @@ public sealed class LocalPathingApi : IPPather
     {
         long timestamp = Stopwatch.GetTimestamp();
 
-        service.SetLocations(
-            service.ToWorld(uiMap, mapFrom.X, mapFrom.Y, mapFrom.Z),
-            service.ToWorld(uiMap, mapTo.X, mapTo.Y));
+        Path path;
+        float searchFromMapId;
 
-        Path path = service.DoSearch(searchStrategy);
+        // See FindWorldRoute. SearchFrom is captured inside the lock too - it belongs to
+        // the search that just ran, and another caller's SetLocations would replace it.
+        lock (searchLock)
+        {
+            service.SetLocations(
+                service.ToWorld(uiMap, mapFrom.X, mapFrom.Y, mapFrom.Z),
+                service.ToWorld(uiMap, mapTo.X, mapTo.Y));
+
+            path = service.DoSearch(searchStrategy);
+            searchFromMapId = service.SearchFrom.W;
+        }
+
         if (path == null)
         {
             if (debug)
@@ -60,7 +80,7 @@ public sealed class LocalPathingApi : IPPather
             return Array.Empty<Vector3>();
         }
 
-        if (debug)
+        if (debug && logger.IsEnabled(LogLevel.Debug))
             logger.LogDebug("Finding route from {MapFrom} map {UiMap} to {MapTo} took {ElapsedMs} ms.", mapFrom, uiMap, mapTo, Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds);
 
         if ((DateTime.UtcNow - lastSave).TotalMinutes >= 1)
@@ -71,7 +91,7 @@ public sealed class LocalPathingApi : IPPather
 
         for (int i = 0; i < path.locations.Count; i++)
         {
-            path.locations[i] = service.ToLocal(path.locations[i], (int)service.SearchFrom.W, uiMap);
+            path.locations[i] = service.ToLocal(path.locations[i], (int)searchFromMapId, uiMap);
         }
         return path.locations.ToArray();
     }
@@ -80,11 +100,22 @@ public sealed class LocalPathingApi : IPPather
     {
         long timestamp = Stopwatch.GetTimestamp();
 
-        service.SetLocations(
-            service.ToWorldZ(uiMap, worldFrom.X, worldFrom.Y, worldFrom.Z, startIndoors),
-            service.ToWorldZ(uiMap, worldTo.X, worldTo.Y, worldTo.Z));
+        Path path;
 
-        Path path = service.DoSearch(searchStrategy);
+        // SetLocations/DoSearch is a stateful two-call protocol on a non-reentrant
+        // singleton (see PPather/CLAUDE.md). Until now the only caller was Navigation's
+        // PathFinderThread, so it was serialized by accident; route generation runs on the
+        // bot thread, which would interleave the two calls and search between the wrong
+        // endpoints.
+        lock (searchLock)
+        {
+            service.SetLocations(
+                service.ToWorldZ(uiMap, worldFrom.X, worldFrom.Y, worldFrom.Z, startIndoors),
+                service.ToWorldZ(uiMap, worldTo.X, worldTo.Y, worldTo.Z));
+
+            path = service.DoSearch(searchStrategy);
+        }
+
         if (path == null)
         {
             if (debug)
@@ -93,7 +124,7 @@ public sealed class LocalPathingApi : IPPather
             return Array.Empty<Vector3>();
         }
 
-        if (debug)
+        if (debug && logger.IsEnabled(LogLevel.Debug))
             logger.LogDebug("Finding route from {WorldFrom} map {UiMap} to {WorldTo} took {ElapsedMs} ms.", worldFrom, uiMap, worldTo, Stopwatch.GetElapsedTime(timestamp).TotalMilliseconds);
 
         if ((DateTime.UtcNow - lastSave).TotalMinutes >= 1)

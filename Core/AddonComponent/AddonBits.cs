@@ -124,4 +124,23 @@ public sealed class AddonBits : IReader, IGameMenuWindowShown
     public bool SpellBookFrameOpen() => v3[Mask._14];
 
     public bool FriendsFrameOpen() => v3[Mask._15];
+
+    public bool TrainerFrameShown() => v3[Mask._16];
+
+    /// <summary>
+    /// Polled from MerchantFrame, so it says whether the window is on screen right now -
+    /// unlike the cell 73 sentinels, which latch the last event and cannot tell a window
+    /// that is currently open from one that opened and closed again.
+    /// </summary>
+    public bool MerchantFrameShown() => v3[Mask._17];
+
+    /// <summary>
+    /// The pet can start a fight on its own right now - it is alive and at least
+    /// one of its spells is castable.
+    ///
+    /// <para>False is the out of power case: an Imp with no mana left for Firebolt
+    /// stands where it is rather than closing to melee, so a profile that hands the
+    /// pull to the pet waits out the whole pull timer for nothing.</para>
+    /// </summary>
+    public bool Pet_CanPull() => v3[Mask._18];
 }

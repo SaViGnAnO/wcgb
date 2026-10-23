@@ -117,7 +117,19 @@ local bits3Cache = {
     characterFrameOpen = false,     -- bit 13 (hooked)
     spellBookFrameOpen = false,     -- bit 14 (hooked)
     friendsFrameOpen = false,       -- bit 15 (hooked)
+    trainerFrameShown = false,      -- bit 16 (event-driven: TRAINER_SHOW/TRAINER_CLOSED)
+    merchantFrameShown = false,     -- bit 17 (polled)
+    petCanPull = false,             -- bit 18 (polled)
 }
+
+-- { cost, type } for every pet action slot the pet spends power to cast.
+-- Rescanned on PET_BAR_UPDATE only: resolving a cost can cost a tooltip build on
+-- the oldest clients, and the poll below then needs one UnitPower read per entry
+-- rather than a full bar sweep every frame.
+local petSpellSlots = {}
+local petSpellSlotCount = 0
+
+local NUM_PET_ACTION_SLOTS = 10
 
 -- Track if cache has been initialized
 local cacheInitialized = false
@@ -238,6 +250,17 @@ local function UpdateFocusCache()
 end
 
 -- Update pet-related bits
+-- Cheap path into DataToColor:PetCanPull: the slot list below was scanned on the
+-- last PET_BAR_UPDATE, so this costs one API call per pet spell rather than the
+-- twenty a full bar sweep would cost on every poll.
+local function ComputePetCanPull()
+    if not bits1Cache.petIsAlive then
+        return false
+    end
+
+    return DataToColor:PetCanPull(petSpellSlots, petSpellSlotCount)
+end
+
 local function UpdatePetCache()
     local pet = DataToColor.C.unitPet
     local petVisible = UnitIsVisible(pet)
@@ -258,7 +281,7 @@ local function UpdatePetCache()
     -- Pet defensive mode
     if HasPetUI() then
         bits2Cache.petIsDefensive = false
-        for i = 1, 10 do
+        for i = 1, NUM_PET_ACTION_SLOTS do
             local name, _, _, isActive = GetPetActionInfo(i)
             if isActive and name == DataToColor.C.PET_MODE_DEFENSIVE then
                 bits2Cache.petIsDefensive = true
@@ -268,6 +291,29 @@ local function UpdatePetCache()
     else
         bits2Cache.petIsDefensive = false
     end
+
+    petSpellSlotCount = 0
+    if HasPetUI() then
+        for i = 1, NUM_PET_ACTION_SLOTS do
+            local cost, powerType = DataToColor:GetPetActionSpellCost(i)
+            if cost then
+                petSpellSlotCount = petSpellSlotCount + 1
+
+                -- Reused across rescans: the table is only ever read inside
+                -- PetCanPull, which never holds on to an entry.
+                local entry = petSpellSlots[petSpellSlotCount]
+                if not entry then
+                    entry = {}
+                    petSpellSlots[petSpellSlotCount] = entry
+                end
+
+                entry.cost = cost
+                entry.type = powerType
+            end
+        end
+    end
+
+    bits3Cache.petCanPull = ComputePetCanPull()
 end
 
 -- Update player combat state
@@ -368,6 +414,13 @@ local function UpdateMailFrameCache()
     bits3Cache.mailFrameShown = MailFrame:IsShown() or false
 end
 
+-- Update merchant frame state. Polled rather than driven off MERCHANT_SHOW/CLOSED so it
+-- reports what is on screen right now: the bot uses it to decide whether interacting
+-- again would close a window that is already open.
+local function UpdateMerchantFrameCache()
+    bits3Cache.merchantFrameShown = MerchantFrame:IsShown() or false
+end
+
 --------------------------------------------------------------------------------
 -- Polled Values (called every frame)
 -- These values cannot be reliably event-driven but are few enough
@@ -386,10 +439,22 @@ local function UpdatePolledValues()
     bits2Cache.gameMenuShown = GameMenuFrame:IsShown() or false
     bits3Cache.chatInputActive = DataToColor:IsChatInputActive() or false
     UpdateMailFrameCache()
+    UpdateMerchantFrameCache()
+
+    -- Focus target combat state - UNIT_FLAGS doesn't fire for derived units
+    -- like "focustarget" / "party1target", so we must poll
+    if bits2Cache.focusTargetExists then
+        bits2Cache.focusTargetInCombat = UnitAffectingCombat(DataToColor.C.unitFocusTarget) or false
+    end
 
     -- Spell states - must be polled because bot checks these immediately after
     -- sending key presses, faster than START/STOP_AUTOREPEAT_SPELL events fire
     UpdateSpellStateCache()
+
+    -- Pet power drains and refills continuously and no event tracks slot
+    -- usability, so this is polled. Costs one call per pet spell, and none at
+    -- all without a pet.
+    bits3Cache.petCanPull = ComputePetCanPull()
 end
 
 --------------------------------------------------------------------------------
@@ -415,6 +480,7 @@ local function InitializeCache()
     UpdateSoftInteractCache()
     UpdateLootFrameCache()
     UpdateMailFrameCache()
+    UpdateMerchantFrameCache()
 
     bits3Cache.anyBagOpen = DataToColor:AnyBagOpen()
     bits3Cache.characterFrameOpen = DataToColor:CharacterFrameOpen()
@@ -519,7 +585,10 @@ function DataToColor:Bits3Cached()
         (bits3Cache.anyBagOpen and 2 or 0) ^ 12 +
         (bits3Cache.characterFrameOpen and 2 or 0) ^ 13 +
         (bits3Cache.spellBookFrameOpen and 2 or 0) ^ 14 +
-        (bits3Cache.friendsFrameOpen and 2 or 0) ^ 15
+        (bits3Cache.friendsFrameOpen and 2 or 0) ^ 15 +
+        (bits3Cache.trainerFrameShown and 2 or 0) ^ 16 +
+        (bits3Cache.merchantFrameShown and 2 or 0) ^ 17 +
+        (bits3Cache.petCanPull and 2 or 0) ^ 18
 end
 
 --------------------------------------------------------------------------------

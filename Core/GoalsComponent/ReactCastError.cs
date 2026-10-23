@@ -9,8 +9,27 @@ using static System.MathF;
 
 namespace Core;
 
-public sealed class ReactCastError
+public sealed partial class ReactCastError
 {
+    /// <summary>
+    /// Addon frames the client gets to register the interact press and begin turning.
+    /// Counted in frames, not milliseconds, on purpose - the only latency-independent
+    /// unit available here.
+    /// </summary>
+    private const int TurnStartFrames = 5;
+
+    /// <summary>
+    /// Longest an interact-turn can run. The client turns at PI rad/s
+    /// (see <see cref="PlayerDirection"/>), so a 180 costs a full second. The wait
+    /// returns as soon as the facing settles, so a generous ceiling costs nothing.
+    /// </summary>
+    private const int TurnSettleMs = 1000;
+
+    /// <summary>
+    /// Frames the facing must hold identical to count as settled.
+    /// </summary>
+    private const int SettleFrames = 4;
+
     private readonly ILogger<ReactCastError> logger;
     private readonly PlayerReader playerReader;
     private readonly ActionBarBits<IUsableAction> usableAction;
@@ -19,18 +38,15 @@ public sealed class ReactCastError
     private readonly ConfigurableInput input;
     private readonly StopMoving stopMoving;
     private readonly PlayerDirection direction;
-    private readonly AddonReader addonReader;
 
     public ReactCastError(ILogger<ReactCastError> logger,
         PlayerReader playerReader,
-        AddonReader addonReader,
         ActionBarBits<IUsableAction> usableAction,
         AddonBits bits, Wait wait, ConfigurableInput input, StopMoving stopMoving,
         PlayerDirection direction)
     {
         this.logger = logger;
         this.playerReader = playerReader;
-        this.addonReader = addonReader;
         this.usableAction = usableAction;
         this.bits = bits;
         this.wait = wait;
@@ -50,8 +66,7 @@ public sealed class ReactCastError
             case UI_ERROR.CAST_SENT:
                 UI_ERROR currentCastState = playerReader.CastState;
                 int maxTime = Math.Min(playerReader.DoubleNetworkLatency, playerReader.RemainCastMs);
-                if (logger.IsEnabled(LogLevel.Information))
-                    logger.LogInformation($"React to {value.ToStringF()} -- by waiting {maxTime}ms!");
+                LogReactCastSent(logger, value, maxTime);
 
                 wait.Until(maxTime,
                     () => currentCastState != playerReader.CastState);
@@ -66,7 +81,7 @@ public sealed class ReactCastError
             case UI_ERROR.SPELL_FAILED_NOT_READY:
             /*
             int waitTime = Math.Max(playerReader.GCD.Value, playerReader.RemainCastMs);
-            logger.LogInformation($"React to {value.ToStringF()} -- wait for GCD {waitTime}ms");
+            logger.LogInformation($"React to {value.ToString()} -- wait for GCD {waitTime}ms");
             if (waitTime > 0)
                 wait.Fixed(waitTime);
             break;
@@ -79,8 +94,7 @@ public sealed class ReactCastError
                 int debuffCount = playerReader.AuraCount.PlayerDebuff;
                 if (debuffCount != 0)
                 {
-                    if (logger.IsEnabled(LogLevel.Information))
-                        logger.LogInformation($"React to {value.ToStringF()} -- Wait till losing debuff!");
+                    LogReactWaitLoseDebuff(logger, value);
 
                     WaitDebuffChange(wait, debuffCount, playerReader);
                     static void WaitDebuffChange(Wait wait,
@@ -90,8 +104,7 @@ public sealed class ReactCastError
                 }
                 else
                 {
-                    if (logger.IsEnabled(LogLevel.Information))
-                        logger.LogInformation($"Didn't know how to react {value.ToStringF()} when PlayerDebuffCount: {debuffCount}");
+                    LogUnknownDebuffReaction(logger, value, debuffCount);
                 }
 
                 break;
@@ -102,8 +115,7 @@ public sealed class ReactCastError
 
                 if (playerReader.Class == UnitClass.Hunter && playerReader.IsInMeleeRange())
                 {
-                    if (logger.IsEnabled(LogLevel.Information))
-                        logger.LogInformation($"As a {UnitClass.Hunter.ToStringF()} didn't know how to react {value.ToStringF()}");
+                    LogHunterUnknownReaction(logger, UnitClass.Hunter, value);
                     return;
                 }
 
@@ -114,15 +126,13 @@ public sealed class ReactCastError
                     {
                         if (playerReader.InCloseMeleeRange())
                         {
-                            if (logger.IsEnabled(LogLevel.Information))
-                                logger.LogInformation($"React to {value.ToStringF()} -- ({minRange}) wait for close melee range.");
+                            LogReactWaitCloseMelee(logger, value, minRange);
                             wait.Update();
                             wait.Update();
                             return;
                         }
 
-                        if (logger.IsEnabled(LogLevel.Information))
-                            logger.LogInformation($"React to {value.ToStringF()} -- ({minRange}) Just wait for the target to get in range.");
+                        LogReactWaitTargetInRange(logger, value, minRange);
 
                         int duration = CastingHandler.GCD;
                         if (playerReader.MinRange() <= 5)
@@ -155,13 +165,15 @@ public sealed class ReactCastError
                             wait.Until(duration, () =>
                             minRange != playerReader.MinRange());
 
-                        if (logger.IsEnabled(LogLevel.Information))
-                            logger.LogInformation($"React to {value.ToStringF()} -- Approached target {minRange}->{playerReader.MinRange()}");
+                            if (logger.IsEnabled(LogLevel.Information))
+                            {
+                                int currentMinRange = playerReader.MinRange();
+                                LogReactApproachedTarget(logger, value, minRange, currentMinRange);
+                            }
                     }
                     else if (!playerReader.WithInPullRange())
                     {
-                        if (logger.IsEnabled(LogLevel.Information))
-                            logger.LogInformation($"React to {value.ToStringF()} -- Start moving forward as outside of pull range.");
+                        LogReactStartMovingForward(logger, value);
                         input.StartForward(true);
                     }
                     else
@@ -173,82 +185,32 @@ public sealed class ReactCastError
             case UI_ERROR.ERR_BADATTACKFACING:
 
                 bool wasAnyAuto = bits.Any_AutoAttack();
-                bool turnedWithInteract = false;
 
-                // Try fast interact if no invalid soft target exists
-                if (!bits.SoftInteract_CombatBlocker())
-                {
-                    float beforeDir = playerReader.Direction;
-                    input.PressFastInteract();
+                // Stop first: every path below turned out to stop anyway, and steering
+                // while sampling the facing is what makes a turn look like it never ends.
+                stopMoving.Stop();
 
-                    const int updateCount = 4;
-                    float e = wait.AfterEquals(playerReader.SpellQueueTimeMs,
-                        updateCount, playerReader._Direction);
-
-                    float sampleTimeMs =
-                        updateCount * (float)addonReader.AvgUpdateLatency;
-
-                    if (e > sampleTimeMs)
-                    {
-                        stopMoving.Stop();
-                        if (logger.IsEnabled(LogLevel.Information))
-                            logger.LogInformation(
-                                $"React to {value.ToStringF()} - " +
-                                $"Fast turn with Interact {e}ms");
-                        turnedWithInteract = true;
-                    }
-                    else
-                    {
-                        if (logger.IsEnabled(LogLevel.Warning))
-                            logger.LogWarning(
-                                $"Unable to react to {value.ToStringF()} - " +
-                                $"Fast turn with Interact {e}ms");
-
-                        // Check if we turned at all (even if slowly)
-                        turnedWithInteract = beforeDir != playerReader.Direction;
-                    }
-                }
-
-                // Fallback: slow turn 180 degrees if interact didn't work or was skipped
-                if (!turnedWithInteract)
-                {
-                    stopMoving.Stop();
-
-                    float targetDir = playerReader.Direction + PI;
-                    if (targetDir > Tau)
-                        targetDir -= Tau;
-
-                    direction.SetDirection(targetDir, Vector3.Zero);
-
-                    string reason = bits.SoftInteract_CombatBlocker()
-                        ? "invalid soft target"
-                        : "interact failed";
-                    if (logger.IsEnabled(LogLevel.Information))
-                        logger.LogInformation(
-                            $"React to {value.ToStringF()} - Slow turn 180deg ({reason})");
-                }
+                if (!TurnWithInteract(value))
+                    TurnAround(value);
 
                 if (!wasAnyAuto)
                     input.PressStopAttack();
 
                 break;
             case UI_ERROR.SPELL_FAILED_MOVING:
-                if (logger.IsEnabled(LogLevel.Information))
-                    logger.LogInformation($"React to {value.ToStringF()} -- Stop moving!");
                 wait.While(bits.Falling);
                 stopMoving.Stop();
-                wait.Update();
+                float stopElapsedMs = wait.Until(CastingHandler.SPELL_QUEUE_HALF, bits.NotMoving);
+                LogReactStopMoving(logger, value, stopElapsedMs);
                 break;
             case UI_ERROR.ERR_SPELL_FAILED_ANOTHER_IN_PROGRESS:
-                if (logger.IsEnabled(LogLevel.Information))
-                    logger.LogInformation($"React to {value.ToStringF()} -- Wait till casting!");
+                LogReactWaitTillCasting(logger, value);
                 wait.While(playerReader.IsCasting);
                 break;
             case UI_ERROR.ERR_BADATTACKPOS:
                 if (bits.Auto_Attack())
                 {
-                    if (logger.IsEnabled(LogLevel.Information))
-                        logger.LogInformation($"React to {value.ToStringF()} -- Interact!");
+                    LogReactInteract(logger, value);
                     input.PressInteract();
                     stopMoving.Stop();
                     wait.Update();
@@ -261,8 +223,7 @@ public sealed class ReactCastError
             case UI_ERROR.SPELL_FAILED_LINE_OF_SIGHT:
                 if (!bits.Combat())
                 {
-                    if (logger.IsEnabled(LogLevel.Information))
-                        logger.LogInformation($"React to {value.ToStringF()} -- Stop attack and clear target!");
+                    LogReactStopAttackClearTarget(logger, value);
                     input.PressStopAttack();
                     input.PressClearTarget();
                     wait.Update();
@@ -273,16 +234,65 @@ public sealed class ReactCastError
                 }
                 break;
             default:
-                if (logger.IsEnabled(LogLevel.Information))
-                    logger.LogInformation($"Didn't know how to React to {value.ToStringF()}");
+                LogUnknownReaction(logger, value);
                 break;
         }
     }
 
+    /// <summary>
+    /// Presses interact and reports whether the client acted on it - the facing moving
+    /// at all is the proof, and the only one available. A turn that is merely slow is
+    /// still a turn, so it is waited out rather than failed: <see cref="TurnAround"/>
+    /// from a mid-turn heading aims away from the target.
+    /// </summary>
+    private bool TurnWithInteract(UI_ERROR value)
+    {
+        if (bits.SoftInteract_CombatBlocker())
+            return false;
+
+        float beforeDir = playerReader.Direction;
+        input.PressFastInteract();
+        wait.Update();
+
+        // Did the press land? Counted in addon frames, not milliseconds - a latency
+        // spike must not be able to decide this.
+        float startMs = wait.UntilCount(TurnStartFrames,
+            () => beforeDir != playerReader.Direction);
+
+        if (startMs < 0)
+        {
+            LogUnableToReactFastTurn(logger, value, -startMs);
+            return false;
+        }
+
+        // It is turning. Let it finish - the wait returns as soon as the facing holds,
+        // so the ceiling only costs time on the turns that genuinely need it.
+        float settleMs = wait.AfterEquals(TurnSettleMs,
+            SettleFrames, playerReader._Direction);
+
+        LogReactFastTurnInteract(logger, value, startMs, settleMs);
+        return true;
+    }
+
+    /// <summary>
+    /// Last resort once interact is out: assume the target is behind and spin.
+    /// </summary>
+    private void TurnAround(UI_ERROR value)
+    {
+        float targetDir = playerReader.Direction + PI;
+        if (targetDir > Tau)
+            targetDir -= Tau;
+
+        direction.SetDirection(targetDir, Vector3.Zero);
+
+        LogReactSlowTurn(logger, value, bits.SoftInteract_CombatBlocker()
+            ? "invalid soft target"
+            : "interact failed");
+    }
+
     private void WaitForCooldown(KeyAction item, UI_ERROR value)
     {
-        if (logger.IsEnabled(LogLevel.Information))
-            logger.LogInformation($"React to {value.ToStringF()} -- wait until its ready");
+        LogReactWaitUntilReady(logger, value);
         int waitTime = Math.Max(playerReader.GCD.Value, playerReader.RemainCastMs);
         bool before = usableAction.Is(item);
 
@@ -293,4 +303,55 @@ public sealed class ReactCastError
             before != usableAction.Is(item) || usableAction.Is(item));
 
     }
+
+    [LoggerMessage(EventId = 3000, Level = LogLevel.Information, Message = "React to {UiError} -- by waiting {MaxTime}ms!")]
+    private static partial void LogReactCastSent(ILogger logger, UI_ERROR uiError, int maxTime);
+
+    [LoggerMessage(EventId = 3001, Level = LogLevel.Information, Message = "React to {UiError} -- Wait till losing debuff!")]
+    private static partial void LogReactWaitLoseDebuff(ILogger logger, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3002, Level = LogLevel.Information, Message = "Didn't know how to react {UiError} when PlayerDebuffCount: {DebuffCount}")]
+    private static partial void LogUnknownDebuffReaction(ILogger logger, UI_ERROR uiError, int debuffCount);
+
+    [LoggerMessage(EventId = 3003, Level = LogLevel.Information, Message = "As a {UnitClass} didn't know how to react {UiError}")]
+    private static partial void LogHunterUnknownReaction(ILogger logger, UnitClass unitClass, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3004, Level = LogLevel.Information, Message = "React to {UiError} -- ({MinRange}) wait for close melee range.")]
+    private static partial void LogReactWaitCloseMelee(ILogger logger, UI_ERROR uiError, int minRange);
+
+    [LoggerMessage(EventId = 3005, Level = LogLevel.Information, Message = "React to {UiError} -- ({MinRange}) Just wait for the target to get in range.")]
+    private static partial void LogReactWaitTargetInRange(ILogger logger, UI_ERROR uiError, int minRange);
+
+    [LoggerMessage(EventId = 3006, Level = LogLevel.Information, Message = "React to {UiError} -- Approached target {OldMinRange}->{NewMinRange}")]
+    private static partial void LogReactApproachedTarget(ILogger logger, UI_ERROR uiError, int oldMinRange, int newMinRange);
+
+    [LoggerMessage(EventId = 3007, Level = LogLevel.Information, Message = "React to {UiError} -- Start moving forward as outside of pull range.")]
+    private static partial void LogReactStartMovingForward(ILogger logger, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3008, Level = LogLevel.Information, Message = "React to {UiError} - Fast turn with Interact: started {StartMs}ms, settled {SettleMs}ms")]
+    private static partial void LogReactFastTurnInteract(ILogger logger, UI_ERROR uiError, float startMs, float settleMs);
+
+    [LoggerMessage(EventId = 3009, Level = LogLevel.Warning, Message = "Unable to react to {UiError} - Interact never moved the facing in {ElapsedMs}ms")]
+    private static partial void LogUnableToReactFastTurn(ILogger logger, UI_ERROR uiError, float elapsedMs);
+
+    [LoggerMessage(EventId = 3010, Level = LogLevel.Information, Message = "React to {UiError} - Slow turn 180deg ({Reason})")]
+    private static partial void LogReactSlowTurn(ILogger logger, UI_ERROR uiError, string reason);
+
+    [LoggerMessage(EventId = 3011, Level = LogLevel.Information, Message = "React to {UiError} -- Stop moving! Took {StopElapsedMs}ms")]
+    private static partial void LogReactStopMoving(ILogger logger, UI_ERROR uiError, float stopElapsedMs);
+
+    [LoggerMessage(EventId = 3012, Level = LogLevel.Information, Message = "React to {UiError} -- Wait till casting!")]
+    private static partial void LogReactWaitTillCasting(ILogger logger, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3013, Level = LogLevel.Information, Message = "React to {UiError} -- Interact!")]
+    private static partial void LogReactInteract(ILogger logger, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3014, Level = LogLevel.Information, Message = "React to {UiError} -- Stop attack and clear target!")]
+    private static partial void LogReactStopAttackClearTarget(ILogger logger, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3015, Level = LogLevel.Information, Message = "Didn't know how to React to {UiError}")]
+    private static partial void LogUnknownReaction(ILogger logger, UI_ERROR uiError);
+
+    [LoggerMessage(EventId = 3016, Level = LogLevel.Information, Message = "React to {UiError} -- wait until its ready")]
+    private static partial void LogReactWaitUntilReady(ILogger logger, UI_ERROR uiError);
 }

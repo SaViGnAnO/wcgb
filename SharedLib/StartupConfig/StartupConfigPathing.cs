@@ -35,6 +35,15 @@ public sealed class StartupConfigPathing
 
     public string Mode { get; set; } = string.Empty;
 
+    /// <summary>
+    /// In-process engine for Local mode (and the PathingAPI server).
+    /// Parsed into <see cref="PathingEngine"/>; defaults to Navmesh.
+    /// </summary>
+    public string Engine { get; set; } = nameof(PathingEngine.Navmesh);
+
+    public PathingEngine EngineType =>
+        System.Enum.TryParse(Engine, out PathingEngine e) ? e : PathingEngine.Navmesh;
+
     public string hostv1 { get; set; } = string.Empty;
     public int portv1 { get; set; }
 

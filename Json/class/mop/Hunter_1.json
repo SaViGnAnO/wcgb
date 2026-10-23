@@ -1,0 +1,91 @@
+{
+  "ClassName": "Hunter",
+  "Mode": "AttendedGrind",
+  "PathFilename": "1_Gnome.json",
+  "IntVariables": {
+    "MIN_TARGET_HP%": 20,
+    "MIN_HP_BEFORE_HEAL%": 25,
+    "MIN_HP_EAT%": 40,
+    "FLEE_MOB_COUNT": 1,
+    "FLEE_HP_LOW%": 60,
+
+    "SPELL_CHARGE": [100, 6178, 11578],
+    "SPELL_STEADY_SHOT": 56641
+  },
+  "Wait": {
+    "Sequence": [
+      {
+        "Cost": 0.9,
+        "Name": "User",
+        "Requirement": "MenuOpen || ChatInputVisible"
+      }
+    ]
+  },
+  "Pull": {
+    "Sequence": [
+      {
+        "Name": "Auto Shot",
+        "Key": "3",
+        "BeforeCastStop": true,
+        "AfterCastWaitCombat": true,
+        "Item": true,
+        "Requirements": [
+          "HasRangedWeapon",
+          "!InMeleeRange",
+          "!AutoShot",
+          "HasAmmo"
+        ]
+      }
+    ]
+  },
+  "Combat": {
+    "Sequence": [
+      {
+        "Name": "Auto Shot",
+        "Key": "3",
+        "Requirements": [
+          "!AutoShot"
+        ]
+      },
+      {
+        "Name": "Arcane Shot",
+        "Key": "1"
+      },
+      {
+        "Name": "Steady Shot",
+        "Key": "2",
+        "WhenUsable": true,
+        "Requirements": [
+          "Spell:SPELL_STEADY_SHOT",
+          "Focus <= Cost_Arcane Shot"
+        ]
+      },
+      {
+        "Name": "Approach",
+        "Log": false,
+        "Requirements": [
+          "InMeleeRange"
+        ]
+      }
+    ]
+  },
+  "NPC": {
+    "Sequence": [
+      {
+        "Cost": 6,
+        "Name": "Repair",
+        "Key": "C",
+        "Requirement": "Durability% < 35"
+      },
+      {
+        "Cost": 6,
+        "Name": "Sell",
+        "Key": "C",
+        "Requirements": [
+          "BagFull",
+          "BagGreyItem"
+        ]
+      }
+    ]
+  }
+}

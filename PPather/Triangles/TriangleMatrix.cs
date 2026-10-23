@@ -4,6 +4,8 @@
  *
  */
 
+#nullable enable
+
 using Microsoft.Extensions.Logging;
 
 using PPather.Triangles.Data;
@@ -67,9 +69,25 @@ public sealed class TriangleMatrix
             int endy = m.LocalToGrid(maxy);
 
             const int BatchSize = 8;
+            // A single large triangle (dungeon-scale WMO wall) can span thousands
+            // of 8yd cells, so the size is geometry-driven and must not be
+            // stack-allocated unconditionally - this runs on Parallel.For workers.
+            const int MaxStackCells = 1024;
             int cellCount = (endx - startx + 1) * (endy - starty + 1);
-            Span<float> gridXs = stackalloc float[cellCount];
-            Span<float> gridYs = stackalloc float[cellCount];
+
+            float[] gridXsRented = null!;
+            float[] gridYsRented = null!;
+
+            Span<float> gridXsStack = cellCount <= MaxStackCells ? stackalloc float[MaxStackCells] : default;
+            Span<float> gridYsStack = cellCount <= MaxStackCells ? stackalloc float[MaxStackCells] : default;
+
+            Span<float> gridXs = cellCount <= MaxStackCells
+                ? gridXsStack[..cellCount]
+                : (gridXsRented = ArrayPool<float>.Shared.Rent(cellCount)).AsSpan(0, cellCount);
+
+            Span<float> gridYs = cellCount <= MaxStackCells
+                ? gridYsStack[..cellCount]
+                : (gridYsRented = ArrayPool<float>.Shared.Rent(cellCount)).AsSpan(0, cellCount);
 
             int idx = 0;
             for (int x = startx; x <= endx; x++)
@@ -82,7 +100,7 @@ public sealed class TriangleMatrix
                 }
             }
 
-            var localDict = LocalDict.Value;
+            Dictionary<int, List<int>> localDict = LocalDict.Value!;
             Vector3 box_halfsize = new(halfResoltion, halfResoltion, 1E6f);
 
             // Prepare batch of box centers
@@ -104,13 +122,23 @@ public sealed class TriangleMatrix
                     if (!TriangleBoxIntersect_SIMD(v0, v1, v2, boxCenters[j], box_halfsize))
                         continue;
 
-                    ref List<int> list = ref CollectionsMarshal.GetValueRefOrAddDefault(localDict, keys[j], out bool exists);
+                    ref List<int>? list = ref CollectionsMarshal.GetValueRefOrAddDefault(localDict, keys[j], out bool exists);
                     if (!exists)
                     {
                         localDict[keys[j]] = list = new List<int>(ACount);
                     }
-                    list.Add(index);
+                    list!.Add(index);
                 }
+            }
+
+            if (gridXsRented != null)
+            {
+                ArrayPool<float>.Shared.Return(gridXsRented);
+            }
+
+            if (gridYsRented != null)
+            {
+                ArrayPool<float>.Shared.Return(gridYsRented);
             }
         });
 
@@ -118,7 +146,7 @@ public sealed class TriangleMatrix
         {
             foreach (var kvp in localDict)
             {
-                ref List<int> list = ref CollectionsMarshal.GetValueRefOrAddDefault(m.Dict, kvp.Key, out bool exists);
+                ref List<int>? list = ref CollectionsMarshal.GetValueRefOrAddDefault(m.Dict, kvp.Key, out bool exists);
                 if (!exists)
                 {
                     list = kvp.Value;
@@ -126,7 +154,7 @@ public sealed class TriangleMatrix
                 }
                 else
                 {
-                    list.AddRange(kvp.Value);
+                    list!.AddRange(kvp.Value);
                 }
             }
         }

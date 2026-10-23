@@ -54,12 +54,15 @@ public static class DependencyInjection
         s.ForwardSingleton<GossipReader, IReader>();
         s.ForwardSingleton<SpellBookReader, IReader>();
         s.ForwardSingleton<TalentReader, IReader>();
+        s.ForwardSingleton<TrainerReader, IReader>();
         s.ForwardSingleton<KeyBindingsReader, IReader>();
         s.ForwardSingleton<ActionBarTextureReader, IReader>();
         s.ForwardSingleton<ActionBarMacroReader, IReader>();
 
         s.ForwardSingleton<ActionBarCostReader, IReader>();
         s.ForwardSingleton<ActionBarCooldownReader, IReader>();
+        s.ForwardSingleton<ActionBarCastTimeReader, IReader>();
+        s.ForwardSingleton<CastEventReader, IReader>();
 
         s.ForwardSingleton<ActionBarBits<ICurrentAction>, IReader>(
             x => new(25, 26, 27, 28, 29));
@@ -76,6 +79,55 @@ public static class DependencyInjection
             x => new(92, 93));
         s.ForwardSingleton<AuraTimeReader<IPlayerDebuffTimeReader>, IReader>(
             x => new(104, 105));
+
+        return s;
+    }
+
+    public static IServiceCollection AddCoreLoadOnly(
+        this IServiceCollection s, string clientPath = "wrath")
+    {
+        s.AddSingleton<CancellationTokenSource>();
+        s.AddSingleton<ManualResetEventSlim>(x => new(false));
+
+        s.AddSingleton<DataConfig>(x => DataConfig.Load(clientPath));
+
+        const int frameCount = 120;
+        DataFrame[] frames = new DataFrame[frameCount];
+        for (int i = 0; i < frameCount; i++)
+            frames[i] = new(i, 0, 0);
+
+        s.AddSingleton(frames);
+        s.AddSingleton<IAddonDataProvider>(x => new NullAddonDataProvider(frameCount));
+
+        s.AddSingleton<IScreenImageProvider>(x => new NullScreenImageProvider());
+
+        s.AddSingleton<INpcResetEvent, NpcResetEvent>();
+        s.AddSingleton<CpuLineSegmentProvider>();
+        s.AddSingleton<INpcLineSegmentProvider>(x =>
+            x.GetRequiredService<CpuLineSegmentProvider>());
+        s.AddSingleton<NpcNameFinder>();
+
+        s.AddSingleton<WorldMapAreaDB>();
+        s.AddSingleton<CreatureDB>();
+        s.AddSingleton<FactionTemplateDB>();
+        s.AddSingleton<AreaDB>();
+        s.AddSingleton<NpcSpawnDB>();
+
+        // Root-scoped so the preview page can generate without a bot session running.
+        // RouteGenerator serialises its own creature-filter evaluation, so the page and a
+        // wander regeneration can share the instance.
+        s.AddSingleton<IRouteGenPlayer, RouteGenPlayer>();
+        s.AddSingleton<CreatureRequirementFactory>();
+        s.AddSingleton<RouteGenerator>();
+
+        s.AddSingleton<SpellDB>();
+        s.AddSingleton<IconDB>();
+        s.AddSingleton<ItemDB>();
+        s.AddSingleton<TalentDB>();
+
+        s.AddAddonComponents();
+
+        s.AddSingleton<SessionStat>();
 
         return s;
     }
@@ -103,6 +155,11 @@ public static class DependencyInjection
         s.ForwardSingleton<IPPather>(sp);
         s.ForwardSingleton<ExecGameCommand>(sp);
 
+        // Navigation lives in this child container; forward the bound spline
+        // options so it sees appsettings/CLI values instead of a default
+        // SplineFollowerOptions (Enabled=false, untuned).
+        s.ForwardSingleton<IOptions<SplineFollowerOptions>>(sp);
+
         s.ForwardSingleton<Wait>(sp);
 
         s.ForwardSingleton<DataConfig>(sp);
@@ -112,6 +169,13 @@ public static class DependencyInjection
         s.ForwardSingleton<ItemDB>(sp);
         s.ForwardSingleton<CreatureDB>(sp);
         s.ForwardSingleton<FactionTemplateDB>(sp);
+        s.ForwardSingleton<NpcSpawnDB>(sp);
+
+        // Route generation samples and floods the navmesh directly, which IPPather - a
+        // point-to-point interface - cannot express. The service is registered regardless
+        // of pathing mode, so this is available even when a remote pather is in use.
+        s.ForwardSingleton<PPatherService>(sp);
+        s.ForwardSingleton<RouteGenerator>(sp);
         s.ForwardSingleton<SpellDB>(sp);
         s.ForwardSingleton<IconDB>(sp);
         s.ForwardSingleton<TalentDB>(sp);
@@ -143,9 +207,12 @@ public static class DependencyInjection
         s.ForwardSingleton<GossipReader>(sp);
         s.ForwardSingleton<SpellBookReader>(sp);
         s.ForwardSingleton<TalentReader>(sp);
+        s.ForwardSingleton<TrainerReader>(sp);
 
         s.ForwardSingleton<ActionBarCostReader>(sp);
         s.ForwardSingleton<ActionBarCooldownReader>(sp);
+        s.ForwardSingleton<ActionBarCastTimeReader>(sp);
+        s.ForwardSingleton<CastEventReader>(sp);
 
         s.ForwardSingleton<ActionBarBits<ICurrentAction>>(sp);
         s.ForwardSingleton<ActionBarBits<IUsableAction>>(sp);
@@ -212,7 +279,9 @@ public static class DependencyInjection
             var serviceLogger = loggerFactory.CreateLogger<PPatherService>();
             var dataConfig = x.GetRequiredService<DataConfig>();
             var worldMapAreaDB = x.GetRequiredService<WorldMapAreaDB>();
-            return new PPatherService(serviceLogger, dataConfig, worldMapAreaDB);
+            var bakeOptions = x.GetRequiredService<IOptions<NavmeshBakeOptions>>();
+            var queryOptions = x.GetRequiredService<IOptions<NavmeshQueryOptions>>();
+            return new PPatherService(serviceLogger, dataConfig, worldMapAreaDB, bakeOptions, queryOptions);
         });
 
         s.AddSingleton<IAddonDataProvider>(x =>
@@ -230,10 +299,19 @@ public static class DependencyInjection
         s.AddSingleton<ItemDB>();
         s.AddSingleton<CreatureDB>();
         s.AddSingleton<FactionTemplateDB>();
+        s.AddSingleton<NpcSpawnDB>();
         s.AddSingleton<SpellDB>();
         s.AddSingleton<IconDB>();
         s.AddSingleton<TalentDB>();
         s.AddSingleton<MailboxDB>();
+
+        // Route generation. Root-scoped so the preview page can generate with no bot
+        // session running, and so AddStartupIoC can forward one shared instance into the
+        // session container - RouteGenerator serialises its own creature-filter evaluation
+        // precisely so the page and a wander lap can share it.
+        s.AddSingleton<IRouteGenPlayer, RouteGenPlayer>();
+        s.AddSingleton<CreatureRequirementFactory>();
+        s.AddSingleton<RouteGenerator>();
 
         s.AddAddonComponents();
 
@@ -330,14 +408,18 @@ public static class DependencyInjection
             new ServiceProviderOptions { ValidateOnBuild = true });
 
         WowProcess process = sp.GetRequiredService<WowProcess>();
-        log.LogInformation("Pid: {Id}", process.Id);
-        log.LogInformation("Version: {FileVersion}", process.FileVersion);
+        if (log.IsEnabled(LogLevel.Information))
+        {
+            log.LogInformation("Pid: {Id}", process.Id);
+            log.LogInformation("Version: {FileVersion}", process.FileVersion);
+        }
 
         services.AddSingleton<Version>(x => process.FileVersion);
 
         AddonConfigurator configurator = sp.GetRequiredService<AddonConfigurator>();
         Version? installVersion = configurator.GetInstallVersion();
-        log.LogInformation("Addon version: {InstallVersion}", installVersion);
+        if (log.IsEnabled(LogLevel.Information))
+            log.LogInformation("Addon version: {InstallVersion}", installVersion);
 
         if (configurator.IsDefault() || installVersion == null)
         {
@@ -424,9 +506,10 @@ public static class DependencyInjection
                 scp.hostv3, scp.portv3, worldMapAreaDB);
             if (api.PingServer())
             {
-                logger.LogInformation(
-                    "Using {Type}({Name}) {Host}:{Port}",
-                    StartupConfigPathing.Types.RemoteV3, api.GetType().Name, scp.hostv3, scp.portv3);
+                if (logger.IsEnabled(LogLevel.Information))
+                    logger.LogInformation(
+                        "Using {Type}({Name}) {Host}:{Port}",
+                        StartupConfigPathing.Types.RemoteV3, api.GetType().Name, scp.hostv3, scp.portv3);
                 return api;
             }
             api.Dispose();
@@ -447,9 +530,11 @@ public static class DependencyInjection
                         StartupConfigPathing.Types.RemoteV1);
                 }
 
-                logger.LogInformation(
-                    "Using {Type}({Name}) {Host}:{Port}",
-                    StartupConfigPathing.Types.RemoteV1, api.GetType().Name, scp.hostv1, scp.portv1);
+                bool smoothed = api.QueryCapabilities();
+                if (logger.IsEnabled(LogLevel.Information))
+                    logger.LogInformation(
+                        "Using {Type}({Name}) {Host}:{Port} (PathsAreSmoothed={Smoothed})",
+                        StartupConfigPathing.Types.RemoteV1, api.GetType().Name, scp.hostv1, scp.portv1, smoothed);
                 return api;
             }
         }
@@ -460,12 +545,15 @@ public static class DependencyInjection
         }
 
         var service = sp.GetRequiredService<PPatherService>();
+        service.Engine = scp.EngineType;
+
         var pathingLogger = loggerFactory.CreateLogger<LocalPathingApi>();
 
         LocalPathingApi localApi = new(pathingLogger, service);
-        logger.LogInformation(
-            "Using {Type}({Name})",
-            StartupConfigPathing.Types.Local, localApi.GetType().Name);
+        if (logger.IsEnabled(LogLevel.Information))
+            logger.LogInformation(
+                "Using {Type}({Name}) engine {Engine}",
+                StartupConfigPathing.Types.Local, localApi.GetType().Name, service.Engine);
 
         return localApi;
     }
@@ -490,9 +578,10 @@ public static class DependencyInjection
         }
         else
         {
-            logger.LogInformation(
-                "Found PathViz {Type}({Name}) {Host}:{Port}",
-                StartupConfigPathing.Types.RemoteV1, api.GetType().Name, scp.hostv1, scp.portv1);
+            if (logger.IsEnabled(LogLevel.Information))
+                logger.LogInformation(
+                    "Found PathViz {Type}({Name}) {Host}:{Port}",
+                    StartupConfigPathing.Types.RemoteV1, api.GetType().Name, scp.hostv1, scp.portv1);
         }
 
         return api ?? (IPathVizualizer)new NoPathVisualizer();

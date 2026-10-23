@@ -7,6 +7,7 @@ local floor = math.floor
 local UIErrorsFrame = UIErrorsFrame
 local CombatLogGetCurrentEventInfo = CombatLogGetCurrentEventInfo
 local GetSpellInfo = GetSpellInfo
+local GetSpellCastTime = DataToColor.GetSpellCastTime
 local GetSpellBaseCooldown = GetSpellBaseCooldown
 local GetTime = GetTime
 local GetGossipOptions = DataToColor.GetGossipOptions
@@ -16,6 +17,9 @@ local GetRepairAllCost = GetRepairAllCost
 local GetMoney = GetMoney
 local RepairAllItems = RepairAllItems
 local UnitRangedDamage = UnitRangedDamage
+
+local GetNumLootItems = GetNumLootItems
+local LootSlot = LootSlot
 
 local DeclineGroup = DeclineGroup
 local AcceptGroup = AcceptGroup
@@ -36,6 +40,22 @@ local NUM_BAG_SLOTS = NUM_BAG_SLOTS
 local CAST_SENT = 999997
 local CAST_START = 999998
 local CAST_SUCCESS = 999999
+
+-- Short codes for the per-spell cast event queue (cell 113).
+-- Errors 1..18 from errorList map directly to the same UI_ERROR.* values
+-- on the bot side; sentinels above 250 are remapped by the bot back to the
+-- 999997/8/9 constants. Layout: encoded = spellId + eventCode * 65536.
+local EVENT_CODE_CAST_SENT = 251
+local EVENT_CODE_CAST_START = 252
+local EVENT_CODE_CAST_SUCCESS = 253
+
+local function PushCastEvent(spellId, eventCode)
+    if not DataToColor.castEventQueue then return end
+    spellId = (tonumber(spellId) or 0) % 65536
+    eventCode = (tonumber(eventCode) or 0) % 256
+    if eventCode == 0 then return end
+    DataToColor.castEventQueue:push(spellId + eventCode * 65536)
+end
 
 local MERCHANT_SHOW_V = 9999999
 local MERCHANT_CLOSED_V = 9999998
@@ -143,8 +163,16 @@ function DataToColor:RegisterEvents()
     -- allows to use the addon with older client version
     DataToColor:SafeRegisterEvent("PLAYER_SOFT_INTERACT_CHANGED", "OnPlayerSoftInteractChanged")
 
+    -- MoP: a Pandaren leaves Neutral at the end of the Wandering Isle. Cell 46
+    -- carries the faction, so re-detect the moment the choice lands instead of
+    -- waiting for the next PLAYER_ENTERING_WORLD.
+    DataToColor:SafeRegisterEvent("NEUTRAL_FACTION_SELECT_RESULT", "OnNeutralFactionSelect")
+
     -- Season of mastery / vanilla
-    if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
+    -- Must go through IsClassic(): on a Legacy client (4.3.4, 5.4.8) both
+    -- WOW_PROJECT_ID and WOW_PROJECT_CLASSIC are nil, so a raw `==` compare is
+    -- nil == nil and these vanilla-only handlers would register there too.
+    if DataToColor.IsClassic() then
         DataToColor:RegisterEvent('UNIT_SPELLCAST_START', 'SoM_OnCastStart')
         DataToColor:RegisterEvent('UNIT_SPELLCAST_SUCCEEDED', 'SoM_OnCastSuccess')
         DataToColor:RegisterEvent('UNIT_SPELLCAST_FAILED', 'SoM_OnCastFailed')
@@ -159,9 +187,10 @@ function DataToColor:RegisterEvents()
     ---------------------------------------------------------------------------
     DataToColor:RegisterEvent('UNIT_TARGET', 'OnUnitTarget_BitCache')
     DataToColor:RegisterEvent('UPDATE_MOUSEOVER_UNIT', 'OnMouseoverChanged_BitCache')
-    DataToColor:RegisterEvent('PLAYER_FOCUS_CHANGED', 'OnFocusChanged_BitCache')
+    DataToColor:SafeRegisterEvent('PLAYER_FOCUS_CHANGED', 'OnFocusChanged_BitCache')
     DataToColor:RegisterEvent('PLAYER_REGEN_DISABLED', 'OnEnteredCombat')
     DataToColor:RegisterEvent('UNIT_FLAGS', 'OnUnitFlags_BitCache')
+    DataToColor:RegisterEvent('GROUP_ROSTER_UPDATE', 'OnGroupRosterUpdate_BitCache')
     DataToColor:RegisterEvent('PLAYER_DEAD', 'OnPlayerDead_BitCache')
     DataToColor:RegisterEvent('PLAYER_ALIVE', 'OnPlayerAlive_BitCache')
     DataToColor:RegisterEvent('PLAYER_UNGHOST', 'OnPlayerUnghost_BitCache')
@@ -183,6 +212,8 @@ function DataToColor:RegisterEvents()
     DataToColor:RegisterEvent('LOOT_OPENED', 'OnLootOpened_BitCache')
     DataToColor:RegisterEvent('MAIL_SHOW', 'OnMailShow_BitCache')
     DataToColor:RegisterEvent('MAIL_CLOSED', 'OnMailClosed_BitCache')
+    DataToColor:RegisterEvent('TRAINER_SHOW', 'OnTrainerShow_BitCache')
+    DataToColor:RegisterEvent('TRAINER_CLOSED', 'OnTrainerClosed_BitCache')
     DataToColor:RegisterEvent('BAG_OPEN', 'OnBagOpen_BitCache')
 
     ---------------------------------------------------------------------------
@@ -371,7 +402,7 @@ function DataToColor:OnCombatEvent(...)
     local _, subEvent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags, _, spellId, spellName, _ = ...
     --print(...)
 
-    if playerDamageTakenEvents[subEvent] and
+    if (playerDamageTakenEvents[subEvent] or playerDamageMiss[subEvent]) and
         band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER_OR_PET) and
         strlen(sourceGUID) > 0 and
         (destGUID == DataToColor.playerGUID or
@@ -437,6 +468,7 @@ function DataToColor:OnCombatEvent(...)
                 DataToColor.lastCastEvent = errorListMessages[failedMessage] or 0
                 DataToColor.uiErrorMessage = DataToColor.lastCastEvent
                 DataToColor.uiErrorMessageTime = DataToColor.globalTime
+                PushCastEvent(spellId, DataToColor.lastCastEvent)
                 --DataToColor:Print(subEvent, " ", lastCastEvent, " -> ", DataToColor.lastCastEvent, " ", failedMessage, " ", spellId)
             else
                 DataToColor.lastCastEvent = CAST_SUCCESS
@@ -450,8 +482,7 @@ function DataToColor:OnCombatEvent(...)
                     hasGCD = false
                 end
 
-                local _, _, _, castTime = GetSpellInfo(spellId)
-                castTime = castTime or 0
+                local castTime = GetSpellCastTime(spellId)
 
                 if castTime > 0 then
                     hasGCD = false
@@ -544,8 +575,23 @@ function DataToColor:OnCombatEvent(...)
         end
     end
 
-    if DataToColor.playerPetSummons[sourceGUID] then
+    -- petGUID first, the way the damage taken branch above already does it.
+    -- playerPetSummons is only ever filled by a SPELL_SUMMON row seen live, and it
+    -- is emptied on every reinit, so a pet that was already out when the addon
+    -- loaded - login, /reload, a loading screen - is not in it and every point of
+    -- its damage used to be dropped here.
+    if sourceGUID == DataToColor.petGUID or
+        DataToColor.playerPetSummons[sourceGUID] then
         if playerDamageDone[subEvent] then
+            -- Same kill credit rule as the player's own damage above. Without it a
+            -- mob the pet killed on its own is never queued by unitDied, so the
+            -- corpse is never reported as lootable.
+            local targetGuid = UnitGUID(DataToColor.C.unitTarget)
+            if targetGuid == destGUID and not DataToColor:UnitIsTapDenied(DataToColor.C.unitTarget) and DataToColor.eligibleKillCredit[destGUID] == nil then
+                DataToColor.eligibleKillCredit[destGUID] = true
+                --DataToColor:Print("Kill Credit added(pet): ", destGUID)
+            end
+
             DataToColor.CombatDamageDoneQueue:push(DataToColor:getGuidFromUUID(destGUID))
         end
     end
@@ -556,6 +602,7 @@ function DataToColor:OnCombatEvent(...)
             DataToColor.lastLoot = DataToColor.C.Loot.Corpse
             DataToColor.sessionKillCount = DataToColor.sessionKillCount + 1
             --DataToColor:Print(subEvent, " ", destGUID, " ", DataToColor:getGuidFromUUID(destGUID))
+            DataToColor.eligibleKillCredit[destGUID] = nil
         elseif destGUID == DataToColor.playerGUID then
             DataToColor.CombatCreatureDiedQueue:push(16777215)
             --DataToColor:Print(subEvent, " player Death ", destGUID, " 16777215")
@@ -570,38 +617,64 @@ function DataToColor:OnCombatEvent(...)
     end
 end
 
+-- 2.5.6 appended a fourth argument to UNIT_SPELLCAST_SUCCEEDED and _FAILED, nil in
+-- every sample, so select(-1) reads that instead of the id. The nil does not fault at
+-- the event - PushCastEvent coerces it - it faults a frame later in the pixel loop,
+-- which is why the report reads as an occasional rshift error.
+--
+-- Measured payloads, excluding the event AceEvent passes as the first vararg:
+--   4.3.4   unit, name, rank, lineID, spellID
+--   1.14.2  unit, castGUID, spellID
+--   2.5.3   unit, castGUID, spellID
+--   2.5.6   unit, castGUID, spellID, nil
+--
+-- The id is the last numeric argument on all four, so read it by shape rather than by
+-- client: a fixed index cannot serve both layouts, and 2.5.3 and 2.5.6 disagree while
+-- sharing WOW_PROJECT_ID 5. UNIT_SPELLCAST_SENT carries no id on 4.3.4 and yields its
+-- lineID here, which is what select(-1) has always returned there.
+local function CastEventSpellId(...)
+    for i = select("#", ...), 1, -1 do
+        local v = select(i, ...)
+        if type(v) == "number" then return v end
+    end
+    return 0
+end
+
 function DataToColor:OnUnitSpellCastSent(...)
     --print(...)
     local unit = select(2, ...)
-    local spellId = select(-1, ...)
+    local spellId = CastEventSpellId(...)
     if unit ~= DataToColor.C.unitPlayer then return end
 
     DataToColor.lastCastEvent = CAST_SENT
     DataToColor.uiErrorMessageTime = DataToColor.globalTime
     DataToColor.lastCastSpellId = spellId
+    PushCastEvent(spellId, EVENT_CODE_CAST_SENT)
 end
 
 function DataToColor:OnUnitSpellCastSucceeded(...)
     --print(...)
     local unit = select(2, ...)
-    local spellId = select(-1, ...)
+    local spellId = CastEventSpellId(...)
     if unit ~= DataToColor.C.unitPlayer then return end
 
     DataToColor.lastCastEvent = CAST_SUCCESS
     DataToColor.uiErrorMessageTime = DataToColor.globalTime
     DataToColor.lastCastSpellId = spellId
+    PushCastEvent(spellId, EVENT_CODE_CAST_SUCCESS)
     DataToColor:InvalidateActionUseableCache()
 end
 
 function DataToColor:OnUnitSpellCastFailed(...)
     --print(...)
     local unit = select(2, ...)
-    local spellId = select(-1, ...)
+    local spellId = CastEventSpellId(...)
     if unit ~= DataToColor.C.unitPlayer then return end
 
     DataToColor.lastCastEvent = DataToColor.uiErrorMessage
     DataToColor.uiErrorMessageTime = DataToColor.globalTime
     DataToColor.lastCastSpellId = spellId
+    PushCastEvent(spellId, DataToColor.uiErrorMessage)
 end
 
 function DataToColor:OnUnitSpellCastChannelStart(event, unit, castGUID, spellID)
@@ -622,6 +695,7 @@ end
 function DataToColor:SoM_OnCastStart(event, unitTarget, castGuid, spellId)
     if unitTarget ~= DataToColor.C.unitPlayer then return end
     som_spellId = spellId or 0
+    PushCastEvent(spellId, EVENT_CODE_CAST_START)
 end
 
 function DataToColor:SoM_OnCastFailed(event, unitTarget, castGuid, spellId)
@@ -697,6 +771,10 @@ end
 
 function DataToColor:OnPlayerEquipmentChanged(event, equipmentSlot, hasCurrent)
     DataToColor.equipmentQueue:push(equipmentSlot)
+
+    -- Swapping gear changes durability without raising UPDATE_INVENTORY_DURABILITY,
+    -- so cells 54 and 116 have to be recomputed from here.
+    DataToColor:InvalidateDurabilityCache()
     --local c = hasCurrent and 1 or 0
     --DataToColor:Print("OnPlayerEquipmentChanged "..equipmentSlot.." -> "..c)
 end
@@ -721,12 +799,27 @@ end
 ]]--
 
 function DataToColor:OnSpellsChanged(event)
+    -- Rebuild the spellbook map first so anything below (range cache,
+    -- cast-time queue) resolves spell IDs/textures against fresh data.
+    -- Without this the icon->id map can be stale if the addon loaded
+    -- before SPELLS_CHANGED has fully synced — symptom: Warlock spell
+    -- range bit never sets, both Pull and Combat goals fail until /reload.
+    -- PopulateSpellBookInfo also calls PopulateSpellInRangeNames at the end.
+    DataToColor:PopulateSpellBookInfo()
     DataToColor:InitTalentQueue()
     DataToColor:InitSpellBookQueue()
+    -- Talents/glyphs/spec changes land here and can move a spell's cost.
+    -- No-op unless the client needs the tooltip scraper (4.3.4 / 5.4.8).
+    DataToColor.InvalidateSpellPowerCostCache()
     DataToColor:InitActionBarCostQueue()
-    DataToColor:PopulateSpellInRangeNames()
+    DataToColor:InitActionBarCastTimeQueue()
     DataToColor:InvalidateCurrentActionCache()
     DataToColor:InvalidateActionUseableCache()
+end
+
+function DataToColor:OnNeutralFactionSelect(event)
+    -- Refreshes CHARACTER_FACTION_ID and with it cell 46.
+    DataToColor:DetectPlayerCharacter()
 end
 
 function DataToColor:ActionbarSlotChanged(event, slot)
@@ -734,6 +827,8 @@ function DataToColor:ActionbarSlotChanged(event, slot)
         if HasAction(slot) then
             DataToColor:populateActionbarCost(slot)
         end
+        -- Always publish cast time (0 when slot is empty) so the bot clears stale state on removal.
+        DataToColor:populateActionbarCastTime(slot)
         -- Check for texture change (works for both add and remove)
         DataToColor:CheckActionBarTextureChange(slot)
     end
@@ -784,8 +879,6 @@ function DataToColor:OnZoneChanged(event)
 end
 
 function DataToColor:OnLeftCombat()
-    DataToColor.eligibleKillCredit = {}
-
     -- Update BitCache combat state (player left combat)
     if DataToColor.BitCache and DataToColor.BitCache.bits1 then
         DataToColor.BitCache.bits1.playerInCombat = false
@@ -938,7 +1031,7 @@ function DataToColor:OnUnitTarget_BitCache(event, unit)
     if DataToColor.BitCache and DataToColor.BitCache.updateTargetTarget then
         if unit == "target" then
             DataToColor.BitCache.updateTargetTarget()
-        elseif unit == "focus" then
+        elseif unit == "focus" or unit == DataToColor.C.unitFocus then
             DataToColor.BitCache.updateFocus()
         elseif unit == "pet" then
             DataToColor.BitCache.updatePet()
@@ -960,7 +1053,7 @@ function DataToColor:OnFocusChanged_BitCache(event)
         DataToColor.BitCache.updateFocus()
     end
     if DataToColor.AuraCache and DataToColor.AuraCache.refresh then
-        DataToColor.AuraCache.refresh("focus")
+        DataToColor.AuraCache.refresh(DataToColor.C.unitFocus)
     end
 end
 
@@ -975,10 +1068,16 @@ function DataToColor:OnUnitFlags_BitCache(event, unit)
     if not DataToColor.BitCache or not DataToColor.BitCache.bits1 then return end
     if unit == "target" then
         DataToColor.BitCache.bits1.targetInCombat = UnitAffectingCombat(unit) or false
-    elseif unit == "focus" then
+    elseif unit == "focus" or unit == DataToColor.C.unitFocus then
         DataToColor.BitCache.bits2.focusInCombat = UnitAffectingCombat(unit) or false
-    elseif unit == "focustarget" then
+    elseif unit == "focustarget" or unit == DataToColor.C.unitFocusTarget then
         DataToColor.BitCache.bits2.focusTargetInCombat = UnitAffectingCombat(unit) or false
+    end
+end
+
+function DataToColor:OnGroupRosterUpdate_BitCache(event)
+    if DataToColor.BitCache and DataToColor.BitCache.updateFocus then
+        DataToColor.BitCache.updateFocus()
     end
 end
 
@@ -1070,9 +1169,26 @@ function DataToColor:OnMirrorTimer_BitCache(event)
     end
 end
 
-function DataToColor:OnLootOpened_BitCache(event)
+function DataToColor:OnLootOpened_BitCache(event, autoLoot)
     if DataToColor.BitCache and DataToColor.BitCache.bits3 then
         DataToColor.BitCache.bits3.lootFrameShown = true
+    end
+
+    -- LOOT_OPENED reports whether the client quick-looted this corpse, which is
+    -- not the same as the autoLootDefault CVar the addon sets: the Auto Loot Key
+    -- modifier (AUTOLOOTTOGGLE) INVERTS it while held, so an Interact binding
+    -- carrying that modifier - Alt-Home against an Alt toggle - asks for manual
+    -- loot on every corpse while right-clicking the same corpse quick-loots.
+    -- Nothing then takes the items and LootGoal times out waiting for the window
+    -- to close. Fixing the binding is the real answer; this keeps a misconfigured
+    -- one merely slow instead of stalling the bot on every kill.
+    if autoLoot == 1 or autoLoot == true then
+        return
+    end
+
+    -- Backwards: LootSlot shifts the remaining slots down.
+    for i = GetNumLootItems(), 1, -1 do
+        LootSlot(i)
     end
 end
 
@@ -1091,6 +1207,20 @@ end
 function DataToColor:OnMailClosed_BitCache(event)
     if DataToColor.BitCache and DataToColor.BitCache.bits3 then
         DataToColor.BitCache.bits3.mailFrameShown = false
+    end
+end
+
+-- Tracked off the events rather than an OnShow hook: Blizzard_TrainerUI is loaded on
+-- demand, so ClassTrainerFrame does not exist yet when HookFrameVisibility runs.
+function DataToColor:OnTrainerShow_BitCache(event)
+    if DataToColor.BitCache and DataToColor.BitCache.bits3 then
+        DataToColor.BitCache.bits3.trainerFrameShown = true
+    end
+end
+
+function DataToColor:OnTrainerClosed_BitCache(event)
+    if DataToColor.BitCache and DataToColor.BitCache.bits3 then
+        DataToColor.BitCache.bits3.trainerFrameShown = false
     end
 end
 

@@ -41,6 +41,8 @@ public sealed partial class CastingHandler
 
     private readonly ActionBarBits<IUsableAction> usableAction;
     private readonly ActionBarBits<ICurrentAction> currentAction;
+    private readonly ActionBarCastTimeReader castTimeReader;
+    private readonly CastEventReader castEventReader;
 
     private readonly ClassConfiguration classConfig;
     private readonly FormKeyActions forms;
@@ -50,19 +52,28 @@ public sealed partial class CastingHandler
 
     private readonly CastingHandlerInterruptWatchdog interruptWatchdog;
 
+    private readonly ApproachThrottle approachThrottle;
+
     public bool SpellInQueue()
     {
+        // Returns true while a non-base press would be wasted; CombatGoal
+        // uses this to skip non-base actions during the wait.
+        //
+        // Semantics line up with WoW's spell-queue window:
+        //   - During cast: skip while RemainCast > SQW; inside the last SQW
+        //     ms of the cast, return false so the next press queues.
+        //   - During GCD: skip while GCD > SQW; inside the last SQW ms of
+        //     the GCD, return false so the next press queues against the
+        //     end-of-GCD boundary (the SpellQueueWindow CVar window).
+        // The GCD branch used to gate on HalfSQW which both wasted press
+        // attempts before SQW opened and skipped the SQW window itself —
+        // the inversion here enables actual GCD-tail queueing.
         if (playerReader.IsCasting())
         {
             return playerReader.RemainCastMs > playerReader.SpellQueueTimeMs;
         }
-        else if (playerReader.GCD.Value != 0 &&
-            playerReader.GCD.Value < playerReader.HalfSpellQueueTimeMs)
-        {
-            return true;
-        }
 
-        return false;
+        return playerReader.GCD.Value > playerReader.SpellQueueTimeMs;
     }
 
     public static int _GCD() => GCD;
@@ -74,6 +85,8 @@ public sealed partial class CastingHandler
         AddonBits bits,
         ActionBarBits<IUsableAction> usableAction,
         ActionBarBits<ICurrentAction> currentAction,
+        ActionBarCastTimeReader castTimeReader,
+        CastEventReader castEventReader,
         Wait wait,
         AddonReader addonReader,
         PlayerReader playerReader,
@@ -81,7 +94,8 @@ public sealed partial class CastingHandler
         CombatLog combatLog,
         StopMoving stopMoving,
         ReactCastError react,
-        CastingHandlerInterruptWatchdog interruptWatchdog)
+        CastingHandlerInterruptWatchdog interruptWatchdog,
+        ApproachThrottle approachThrottle)
     {
         this.logger = logger;
         this.input = input;
@@ -96,6 +110,8 @@ public sealed partial class CastingHandler
 
         this.usableAction = usableAction;
         this.currentAction = currentAction;
+        this.castTimeReader = castTimeReader;
+        this.castEventReader = castEventReader;
 
         this.classConfig = classConfig;
         Log = classConfig.Log;
@@ -106,6 +122,24 @@ public sealed partial class CastingHandler
         this.react = react;
 
         this.interruptWatchdog = interruptWatchdog;
+
+        this.approachThrottle = approachThrottle;
+    }
+
+    /// <summary>
+    /// Keepalive for the melee swing wait. The point here is staying on the mob and
+    /// facing it, not reaching combat range, so this passes no arrival condition -
+    /// see <see cref="ApproachThrottle.ShouldPress()"/> for why suppressing the press
+    /// at close melee range was wrong.
+    /// </summary>
+    private void PressApproachThrottled()
+    {
+        if (approachThrottle.ShouldPress())
+        {
+            input.PressApproach();
+
+            approachThrottle.OnPressed();
+        }
     }
 
     private int PressKeyAction(KeyAction item, CancellationToken token)
@@ -148,12 +182,28 @@ public sealed partial class CastingHandler
             token.IsCancellationRequested;
     }
 
+    private static void WaitForItemCastResolution(Wait wait,
+        AddonBits bits, PlayerReader playerReader,
+        CancellationToken token)
+    {
+        bool wasAnyAuto = bits.Any_AutoAttack();
+        int afterSentUIErrorTime = playerReader.UIErrorTime.Value;
+
+        wait.Until(playerReader.DoubleNetworkLatency, Resolved);
+
+        bool Resolved() =>
+            bits.Any_AutoAttack() != wasAnyAuto ||
+            afterSentUIErrorTime != playerReader.UIErrorTime.Value ||
+            token.IsCancellationRequested;
+    }
+
     private CastResult CastInstant(KeyAction item, CancellationToken token)
     {
         if (!playerReader.IsCasting() && bits.Moving() && item.BeforeCastStop)
         {
             stopMoving.Stop();
-            wait.Update(token);
+            wait.Until(SPELL_QUEUE_HALF,
+                () => bits.NotMoving() || token.IsCancellationRequested);
         }
 
         int beforeAuraHash = playerReader.AuraCount.Hash;
@@ -179,18 +229,41 @@ public sealed partial class CastingHandler
             wait, playerReader, item, currentAction, token);
 
         if (DEBUG && Log && item.Log)
-            if (logger.IsEnabled(LogLevel.Information))
-                LogInstantInput(logger, item.Name, pressMs,
-                    playerReader.CastState.ToStringF(), elapsedMs);
+            LogInstantInput(logger, item.Name, pressMs,
+                playerReader.CastState, elapsedMs);
 
         if (elapsedMs < 0)
         {
             if (!DEBUG || (Log && item.Log))
-                if (logger.IsEnabled(LogLevel.Information))
-                    LogInstantInput(logger, item.Name, pressMs,
-                        playerReader.CastState.ToStringF(), elapsedMs);
+                LogInstantInput(logger, item.Name, pressMs,
+                    playerReader.CastState, elapsedMs);
 
-            return CastResult.CurrentActionNotDetected;
+            // The action bar bit is the primary signal, but it is only observable while the
+            // slot is highlighted, and for some instants that never survives a frame - Rend
+            // on 3.4.3 shows no outline at all. Against a local server the window is at its
+            // shortest, so the poll missed it on ~60% of instants and reported a cast that
+            // had plainly succeeded as a failure, burning the whole spell-queue wait.
+            //
+            // The addon stamps uiErrorMessageTime alongside lastCastEvent in
+            // OnUnitSpellCastSucceeded, so a cast event newer than the one we saw before
+            // pressing, carrying a success code, is proof the spell went out. Fall through
+            // to the normal post-cast handling rather than returning - AfterCastWaitSwing
+            // and the aura/event wait below still have to run.
+            bool castConfirmed =
+                beforeCastEventTime != playerReader.UIErrorTime.Value &&
+                CastInstantSuccessful(playerReader.CastEvent.Value);
+
+            if (!castConfirmed)
+            {
+                if (!CastInstantSuccessful(playerReader.CastEvent.Value) &&
+                    playerReader.CastState is not UI_ERROR.NONE &&
+                    beforeCastEventTime != playerReader.UIErrorTime.Value)
+                {
+                    return CastResult.UIError;
+                }
+
+                return CastResult.CurrentActionNotDetected;
+            }
         }
 
         // Melee Swing
@@ -199,7 +272,7 @@ public sealed partial class CastingHandler
             elapsedMs = AfterCastWaitSwing(
                 playerReader.MainHandSpeedMs() + playerReader.NetworkLatency,
                 wait, item, playerReader, currentAction,
-                input.PressApproachOnCooldown, token);
+                PressApproachThrottled, token);
 
             static float AfterCastWaitSwing(int duration, Wait wait,
                 KeyAction item,
@@ -240,37 +313,47 @@ public sealed partial class CastingHandler
         }
 
         if (DEBUG && Log && item.Log)
+        {
             if (logger.IsEnabled(LogLevel.Information))
+            {
+                bool usable = usableAction.Is(item);
+                bool action = currentAction.Is(item);
                 LogInstantUsableChange(logger, item.Name,
-                    beforeUsable, usableAction.Is(item),
-                    beforeAction, currentAction.Is(item),
-                    beforeCastEventValue.ToStringF(),
-                    playerReader.CastState.ToStringF());
+                    beforeUsable, usable,
+                    beforeAction, action,
+                    beforeCastEventValue,
+                    playerReader.CastState);
+            }
+        }
 
         if (elapsedMs < 0)
         {
             if (!DEBUG || (Log && item.Log))
+            {
                 if (logger.IsEnabled(LogLevel.Information))
+                {
+                    bool usable = usableAction.Is(item);
+                    bool action = currentAction.Is(item);
                     LogInstantUsableChange(logger, item.Name,
-                        beforeUsable, usableAction.Is(item),
-                        beforeAction, currentAction.Is(item),
-                        beforeCastEventValue.ToStringF(),
-                        playerReader.CastState.ToStringF());
+                        beforeUsable, usable,
+                        beforeAction, action,
+                        beforeCastEventValue,
+                        playerReader.CastState);
+                }
+            }
 
             return CastResult.UIFeedbackNotDetected;
         }
 
         if (!CastInstantSuccessful(playerReader.CastEvent.Value))
         {
-            if (logger.IsEnabled(LogLevel.Warning))
-                LogInstantInputFailed(logger, item.Name, pressMs, playerReader.CastState.ToStringF(), elapsedMs);
+            LogInstantInputFailed(logger, item.Name, pressMs, playerReader.CastState, elapsedMs);
             return CastResult.UIError;
         }
         else if (!DEBUG && Log && item.Log)
         {
-            if (logger.IsEnabled(LogLevel.Information))
-                LogInstantInput(logger, item.Name, pressMs,
-                    playerReader.CastState.ToStringF(), elapsedMs);
+            LogInstantInput(logger, item.Name, pressMs,
+                playerReader.CastState, elapsedMs);
         }
 
         if (playerReader.CastState == UI_ERROR.CAST_SUCCESS)
@@ -278,8 +361,55 @@ public sealed partial class CastingHandler
             item.SpellId = playerReader.CastSpellId.Value;
         }
 
+        bool isItem = castTimeReader.IsItem(item);
+
+        // For items (especially auto-repeat actions like Shoot / Auto Shot),
+        // CAST_SENT confirms the keypress was registered but the action may
+        // still fail at the server (e.g. ERR_BADATTACKFACING, OUT_OF_RANGE).
+        // Wait a short follow-up window for either the auto-attack bit to
+        // toggle (success) or a UNIT_SPELLCAST_FAILED to overwrite CastEvent
+        // with the error code (failure -> outer retry path runs react.Do).
+        if (isItem)
+        {
+            WaitForItemCastResolution(wait, bits, playerReader, token);
+
+            // Per-spell event lookup — the global CastEvent cell would leak
+            // events from other spells (pet cast, auto-shoot tick, etc.) and
+            // either cause false-positive failures or hide real ones (a
+            // BADATTACKFACING immediately overwritten by a later success).
+            // CastEventReader maintains a per-spellId log so we read exactly
+            // this item's most recent event. TryConsume clears the entry so
+            // a stale event from a previous attempt can't fire twice.
+            //
+            // Fallback: when item.SpellId is 0 (never cast yet, or item
+            // without a known spell ID), fall back to the global cell with
+            // the cross-spell guard.
+            if (item.SpellId != 0)
+            {
+                if (castEventReader.TryConsume(item.SpellId, out UI_ERROR ev) &&
+                    !CastInstantSuccessful((int)ev))
+                {
+                    LogInstantInputFailed(logger, item.Name, pressMs, ev, 0);
+                    return CastResult.UIError;
+                }
+            }
+            else
+            {
+                UI_ERROR latest = (UI_ERROR)playerReader.CastEvent.Value;
+                int latestSpellId = playerReader.CastSpellId.Value;
+                bool eventIsOursOrUnknown =
+                    latestSpellId == 0 || latestSpellId == item.SpellId;
+
+                if (eventIsOursOrUnknown && !CastInstantSuccessful((int)latest))
+                {
+                    LogInstantInputFailed(logger, item.Name, pressMs, latest, 0);
+                    return CastResult.UIError;
+                }
+            }
+        }
+
         item.SetClicked();
-        if (item.Item)
+        if (isItem)
         {
             playerReader.ResetLastCastGCD();
             wait.Update(token);
@@ -297,7 +427,8 @@ public sealed partial class CastingHandler
         if (!playerReader.IsCasting() && bits.Moving())
         {
             stopMoving.Stop();
-            wait.Update(token);
+            wait.Until(SPELL_QUEUE_HALF,
+                () => bits.NotMoving() || token.IsCancellationRequested);
         }
 
         bool beforeUsable = usableAction.Is(item);
@@ -345,12 +476,19 @@ public sealed partial class CastingHandler
             wait, playerReader, token);
 
         if (DEBUG && Log && item.Log)
+        {
             if (logger.IsEnabled(LogLevel.Information))
+            {
+                bool casting = playerReader.IsCasting();
+                bool channeling = bits.Channeling();
+                bool usable = usableAction.Is(item);
                 LogCastbarUsableChange(logger, item.Name,
-                    playerReader.IsCasting(), bits.Channeling(),
-                    playerReader.CastCount, beforeUsable, usableAction.Is(item),
-                    beforeCastEventValue.ToStringF(),
-                    playerReader.CastState.ToStringF());
+                    casting, channeling,
+                    playerReader.CastCount, beforeUsable, usable,
+                    beforeCastEventValue,
+                    playerReader.CastState);
+            }
+        }
 
         if (playerReader.CastState is < UI_ERROR.MAX_ERROR_RANGE and
             not UI_ERROR.NONE)
@@ -367,7 +505,8 @@ public sealed partial class CastingHandler
         {
             if (playerReader.IsCasting() || bits.Channeling())
             {
-                int remainMs = playerReader.RemainCastMs - playerReader.SpellQueueTimeMs;
+                int expected = castTimeReader.Get(item);
+                int remainMs = Max(0, Max(playerReader.RemainCastMs, expected) - playerReader.SpellQueueTimeMs);
                 if (Log && item.Log)
                     LogVisibleAfterCastWaitCastbar(logger, item.Name, remainMs);
 
@@ -384,7 +523,8 @@ public sealed partial class CastingHandler
             {
                 beforeCastEventValue = playerReader.CastState;
 
-                int remainMs = playerReader.RemainCastMs - playerReader.SpellQueueTimeMs;
+                int expected = castTimeReader.Get(item);
+                int remainMs = Max(0, Max(playerReader.RemainCastMs, expected) - playerReader.SpellQueueTimeMs);
                 if (Log && item.Log)
                     LogHiddenAfterCastWaitCastbar(logger, item.Name, remainMs);
 
@@ -464,8 +604,7 @@ public sealed partial class CastingHandler
             if (!beforeUsable && !usableAction.Is(item))
             {
                 if (Log && item.Log)
-                    if (logger.IsEnabled(LogLevel.Warning))
-                        LogAfterFormSwitchNotUsable(logger, item.Name, beforeForm.ToStringF(), playerReader.Form.ToStringF());
+                    LogAfterFormSwitchNotUsable(logger, item.Name, beforeForm, playerReader.Form);
 
                 return false;
             }
@@ -479,7 +618,7 @@ public sealed partial class CastingHandler
             int waitTimeMs = playerReader.GCD.Value;
 
             float elapsedMs = wait.Until(waitTimeMs, token);
-            logger.LogInformation("Stop Shoot and wait {WaitTimeMs}ms | {ElapsedMs}ms", waitTimeMs, elapsedMs);
+            LogStopShootAndWait(logger, waitTimeMs, elapsedMs);
 
             if (elapsedMs >= 0)
             {
@@ -509,10 +648,11 @@ public sealed partial class CastingHandler
 
         if (item.BeforeCastDelay > 0)
         {
-            if (!playerReader.IsCasting() && bits.Moving() && (item.BeforeCastStop || item.HasCastBar))
+            if (!playerReader.IsCasting() && bits.Moving() && (item.BeforeCastStop || castTimeReader.HasCastBar(item)))
             {
                 stopMoving.Stop();
-                wait.Update(token);
+                wait.Until(SPELL_QUEUE_HALF,
+                    () => bits.NotMoving() || token.IsCancellationRequested);
             }
             int delay = Random.Shared.Next(item.BeforeCastDelay, item.BeforeCastMaxDelay);
 
@@ -540,10 +680,15 @@ public sealed partial class CastingHandler
                 auraHash, wait, playerReader, combatLog, token);
 
             if (Log && item.Log)
+            {
                 if (logger.IsEnabled(LogLevel.Information))
+                {
+                    string auraCount = playerReader.AuraCount.ToString();
                     LogAfterCastWaitBuff(logger,
-                        item.Name, playerReader.AuraCount.ToString(),
-                        ((MissType)combatLog.TargetMissType.Value).ToStringF(), elapsedMs);
+                        item.Name, auraCount,
+                        (MissType)combatLog.TargetMissType.Value, elapsedMs);
+                }
+            }
 
             static float AfterCastWaitBuff(int totalTime, int auraHash, Wait wait,
                 PlayerReader playerReader, CombatLog combatLog, CancellationToken token)
@@ -557,12 +702,11 @@ public sealed partial class CastingHandler
         {
             int delay = playerReader.SpellQueueTimeMs +
                 Max(playerReader.RemainCastMs,
-                item.Item ? 0 : playerReader.LastCastGCD);
+                castTimeReader.IsItem(item) ? 0 : playerReader.LastCastGCD);
 
             if (Log && item.Log)
-                if (logger.IsEnabled(LogLevel.Information))
-                    LogAfterCastAuraExpected(logger, item.Name,
-                        ((MissType)combatLog.TargetMissType.Value).ToStringF(), delay);
+                LogAfterCastAuraExpected(logger, item.Name,
+                    (MissType)combatLog.TargetMissType.Value, delay);
 
             item.SetClicked(delay);
         }
@@ -675,8 +819,10 @@ public sealed partial class CastingHandler
     {
         CancellationToken token = CancellationToken.None;
 
+        bool hasCastBar = castTimeReader.HasCastBar(item);
+
         if (item.PressDuration > InputDuration.DefaultPress ||
-            item.HasCastBar)
+            hasCastBar)
             token = interruptWatchdog.Set(interrupt);
 
         if (!PreparedForCast(item, token))
@@ -685,7 +831,7 @@ public sealed partial class CastingHandler
         int auraHash = playerReader.AuraCount.Hash;
 
         Func<KeyAction, CancellationToken, CastResult> castStrategy =
-            item.HasCastBar
+            hasCastBar
             ? CastCastbar
             : CastInstant;
 
@@ -702,8 +848,7 @@ public sealed partial class CastingHandler
                     wait.Fixed(playerReader.NetworkLatency);
                 }
 
-                if (logger.IsEnabled(LogLevel.Error))
-                    LogFailedDueReason(logger, item.Name, result.ToStringF());
+                LogFailedDueReason(logger, item.Name, result);
                 return false;
             }
 
@@ -756,7 +901,13 @@ public sealed partial class CastingHandler
         float elapsedMs = wait.Until(duration, token);
 
         if (DEBUG && Log && item.Log)
-            LogGCD(logger, item.Name, usableAction.Is(item), duration, elapsedMs);
+        {
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                bool usable = usableAction.Is(item);
+                LogGCD(logger, item.Name, usable, duration, elapsedMs);
+            }
+        }
 
         return elapsedMs < 0;
     }
@@ -796,6 +947,12 @@ public sealed partial class CastingHandler
     #region Logging
 
     [LoggerMessage(
+        EventId = 0060,
+        Level = LogLevel.Information,
+        Message = "Stop Shoot and wait {WaitTimeMs}ms | {ElapsedMs}ms")]
+    static partial void LogStopShootAndWait(ILogger logger, int waitTimeMs, float elapsedMs);
+
+    [LoggerMessage(
         EventId = 0070,
         Level = LogLevel.Information,
         Message = "[{name,-17}] ... AfterCastWaitSwing")]
@@ -811,13 +968,13 @@ public sealed partial class CastingHandler
         EventId = 0072,
         Level = LogLevel.Information,
         Message = "[{name,-17}] instant input {pressTime}ms {castState} {inputElapsedMs}ms")]
-    static partial void LogInstantInput(ILogger logger, string name, int pressTime, string castState, float inputElapsedMs);
+    static partial void LogInstantInput(ILogger logger, string name, int pressTime, UI_ERROR castState, float inputElapsedMs);
 
     [LoggerMessage(
         EventId = 0073,
         Level = LogLevel.Warning,
         Message = "[{name,-17}] instant input {pressTime}ms {castState} {inputElapsedMs}ms")]
-    static partial void LogInstantInputFailed(ILogger logger, string name, int pressTime, string castState, float inputElapsedMs);
+    static partial void LogInstantInputFailed(ILogger logger, string name, int pressTime, UI_ERROR castState, float inputElapsedMs);
 
     [LoggerMessage(
         EventId = 0074,
@@ -829,7 +986,7 @@ public sealed partial class CastingHandler
     static partial void LogInstantUsableChange(ILogger logger, string name,
         bool beforeUsable, bool afterUsable,
         bool beforeCurrent, bool afterCurrent,
-        string beforeCastEvent, string afterCastEvent);
+        UI_ERROR beforeCastEvent, UI_ERROR afterCastEvent);
 
     [LoggerMessage(
         EventId = 0075,
@@ -847,7 +1004,7 @@ public sealed partial class CastingHandler
         EventId = 0077,
         Level = LogLevel.Information,
         Message = "[{name,-17}] ... count: {castCount} | casting: {casting} | channeling: {channeling} | usable: {beforeUsable}->{afterUsable} | {beforeCastEvent}->{afterCastEvent}")]
-    static partial void LogCastbarUsableChange(ILogger logger, string name, bool casting, bool channeling, int castCount, bool beforeUsable, bool afterUsable, string beforeCastEvent, string afterCastEvent);
+    static partial void LogCastbarUsableChange(ILogger logger, string name, bool casting, bool channeling, int castCount, bool beforeUsable, bool afterUsable, UI_ERROR beforeCastEvent, UI_ERROR afterCastEvent);
 
     [LoggerMessage(
         EventId = 0078,
@@ -878,7 +1035,7 @@ public sealed partial class CastingHandler
         EventId = 0082,
         Level = LogLevel.Warning,
         Message = "[{name,-17}] ... after {before}->{after} form switch still not usable!")]
-    static partial void LogAfterFormSwitchNotUsable(ILogger logger, string name, string before, string after);
+    static partial void LogAfterFormSwitchNotUsable(ILogger logger, string name, Form before, Form after);
 
     [LoggerMessage(
         EventId = 0083,
@@ -890,7 +1047,7 @@ public sealed partial class CastingHandler
         EventId = 0084,
         Level = LogLevel.Information,
         Message = "[{name,-17}] ... AfterCastWaitBuff count: {auraCount} | miss: {missType} | {elapsedMs}ms")]
-    static partial void LogAfterCastWaitBuff(ILogger logger, string name, string auraCount, string missType, float elapsedMs);
+    static partial void LogAfterCastWaitBuff(ILogger logger, string name, string auraCount, MissType missType, float elapsedMs);
 
     [LoggerMessage(
         EventId = 0085,
@@ -932,7 +1089,7 @@ public sealed partial class CastingHandler
         EventId = 0091,
         Level = LogLevel.Information,
         Message = "[{name,-17}] ... form {before}->{after} | {elapsedMs}ms")]
-    static partial void LogFormChanged(ILogger logger, string name, string before, string after, float elapsedMs);
+    static partial void LogFormChanged(ILogger logger, string name, Form before, Form after, float elapsedMs);
 
     [LoggerMessage(
         EventId = 0092,
@@ -950,7 +1107,7 @@ public sealed partial class CastingHandler
         EventId = 0094,
         Level = LogLevel.Information,
         Message = "[{name,-17}] ... AfterCastAuraExpected miss: {miss} {delay}ms")]
-    static partial void LogAfterCastAuraExpected(ILogger logger, string name, string miss, int delay);
+    static partial void LogAfterCastAuraExpected(ILogger logger, string name, MissType miss, int delay);
 
     [LoggerMessage(
         EventId = 0095,
@@ -974,7 +1131,7 @@ public sealed partial class CastingHandler
         EventId = 0098,
         Level = LogLevel.Error,
         Message = "[{name,-17}] ... Cast failed due {reason}!")]
-    static partial void LogFailedDueReason(ILogger logger, string name, string reason);
+    static partial void LogFailedDueReason(ILogger logger, string name, CastResult reason);
 
     [LoggerMessage(
         EventId = 0099,

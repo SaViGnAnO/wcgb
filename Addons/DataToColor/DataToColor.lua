@@ -18,6 +18,7 @@ local GLOBAL_TIME_CELL = NUMBER_OF_FRAMES - 2
 -- Party frame layout (dedicated frames per member on second row)
 local PARTY_FRAME_START = 121 -- first party frame index (odd -> row 2)
 local PARTY_FRAME_STRIDE = 12 -- keeps all party frames on row 2 (odd indices only)
+local PLAYER_WORLD_Z_FRAME = 120 -- slot 112 is reserved for action cast times
 local PARTY_FRAME_OFFSETS = {
     MapFlags = 0,     -- mapId + inCombat + exists
     NamePart1 = 1,    -- name bytes 1-3 (packed)
@@ -99,6 +100,7 @@ local GetSpellBookItemName = GetSpellBookItemName
 local GetNumTalentTabs = GetNumTalentTabs
 local GetNumTalents = GetNumTalents
 local GetTalentInfo = GetTalentInfo
+local GetTalentRowSelectionInfo = GetTalentRowSelectionInfo -- 5.0+ only, nil before
 local GetNumSpellTabs = GetNumSpellTabs
 local IsSpellKnown = IsSpellKnown
 
@@ -198,6 +200,21 @@ DataToColor.DATA_CONFIG = {
 local FRAME_CHANGE_RATE = 5
 local initPhase = 2 * FRAME_CHANGE_RATE
 
+-- Queue count header marker (must match AddonTicks.QUEUE_COUNT_MARKER in C#)
+-- First item in a queue batch encodes QUEUE_COUNT_MARKER + expectedCount
+-- Must be above max possible queue data value (texture max = 16,149,999)
+-- Exposed on DataToColor table for access from other addon files
+local QUEUE_COUNT_MARKER = 16777000
+DataToColor.QUEUE_COUNT_MARKER = QUEUE_COUNT_MARKER
+
+-- Terminates the lower-rank half of the spellbook batch (must match
+-- AddonTicks.SPELLBOOK_ALL_RANKS_END in C#). A count header cannot be used there:
+-- a cell tops out at 16,777,215, so QUEUE_COUNT_MARKER + n saturates at n = 215 and a
+-- level 60+ spellbook holds more ranks than that. Only ever read on the spellbook cell,
+-- so it cannot collide with the binding queue, whose encoding does span the full 24 bits.
+local SPELLBOOK_ALL_RANKS_END = 16776999
+DataToColor.SPELLBOOK_ALL_RANKS_END = SPELLBOOK_ALL_RANKS_END
+
 -- How often item frames change
 local ITEM_ITERATION_FRAME_CHANGE_RATE = FRAME_CHANGE_RATE
 -- How often the actionbar frames change
@@ -262,9 +279,18 @@ DataToColor.inventoryQueue = DataToColor.TimedQueue:new(ITEM_ITERATION_FRAME_CHA
 DataToColor.gossipQueue = DataToColor.TimedQueue:new(GOSSIP_ITERATION_FRAME_CHANGE_RATE, 0)
 DataToColor.spellBookQueue = DataToColor.TimedQueue:new(SPELLBOOK_ITERATION_FRAME_CHANGE_RATE, nil)
 DataToColor.talentQueue = DataToColor.TimedQueue:new(TALENT_ITERATION_FRAME_CHANGE_RATE, nil)
+DataToColor.trainerQueue = DataToColor.TimedQueue:new(GOSSIP_ITERATION_FRAME_CHANGE_RATE, nil)
 
 DataToColor.actionBarCostQueue = DataToColor.struct:new(ACTION_BAR_ITERATION_FRAME_CHANGE_RATE)
 DataToColor.actionBarCooldownQueue = DataToColor.struct:new(ACTION_BAR_ITERATION_FRAME_CHANGE_RATE)
+DataToColor.actionBarCastTimeQueue = DataToColor.struct:new(ACTION_BAR_ITERATION_FRAME_CHANGE_RATE)
+
+-- Per-spell cast event log: FIFO of encoded (spellId, eventCode) pairs.
+-- Drained one per tick into cell 113 (encoded) + cell 114 (monotonic seq).
+-- Lets the bot read cast events keyed by spellId instead of the global
+-- lastCastEvent cell which is overwrite-prone when events fire close together.
+DataToColor.castEventQueue = DataToColor.TimedQueue:new(FRAME_CHANGE_RATE, 0)
+DataToColor.castEventSeq = 0
 
 DataToColor.eligibleKillCredit = {}
 
@@ -539,6 +565,13 @@ function DataToColor:OnEnteringWorld()
     DataToColor:Print("Welcome. Using " .. version)
     DataToColor:InitializeErrorLists()
 
+    -- Re-detect the player's class/race now that PLAYER_ENTERING_WORLD has fired.
+    -- The addon-load-time read in Constants.lua may have happened before
+    -- UnitClass("player") returned valid data on a cold start, leaving every
+    -- class-conditional table (e.g. S.spellInRangeTarget) empty until /reload.
+    DataToColor:DetectPlayerCharacter()
+    DataToColor:InitStorage()
+
     DataToColor:PopulateSpellBookInfo()
 
     DataToColor:InitUpdateQueues()
@@ -627,6 +660,10 @@ function DataToColor:Reset()
     bagCache = {}
 
     DataToColor.actionBarCooldownQueue = DataToColor.struct:new(ACTION_BAR_ITERATION_FRAME_CHANGE_RATE)
+    DataToColor.actionBarCastTimeQueue = DataToColor.struct:new(ACTION_BAR_ITERATION_FRAME_CHANGE_RATE)
+
+    DataToColor.castEventQueue = DataToColor.TimedQueue:new(FRAME_CHANGE_RATE, 0)
+    DataToColor.castEventSeq = 0
 
     DataToColor:InvalidateCurrentActionCache()
     DataToColor:InvalidateActionUseableCache()
@@ -669,6 +706,7 @@ function DataToColor:ClearAllQueues()
     DataToColor.gossipQueue:clear()
     DataToColor.spellBookQueue:clear()
     DataToColor.talentQueue:clear()
+    DataToColor.trainerQueue:clear()
     DataToColor.CombatDamageDoneQueue:clear()
     DataToColor.CombatDamageTakenQueue:clear()
     DataToColor.CombatCreatureDiedQueue:clear()
@@ -685,6 +723,8 @@ function DataToColor:FushState()
 
     DataToColor:Reset()
     DataToColor:ClearAllQueues()
+
+    DataToColor:InitStorage()
 
     DataToColor:PopulateSpellBookInfo()
     DataToColor:InitUpdateQueues()
@@ -709,6 +749,7 @@ function DataToColor:InitUpdateQueues()
     DataToColor:InitInventoryQueue(0)
 
     DataToColor:InitActionBarCostQueue()
+    DataToColor:InitActionBarCastTimeQueue()
     DataToColor:InitSpellBookQueue()
     DataToColor:InitTalentQueue()
     DataToColor:InitBindingQueue()
@@ -775,6 +816,14 @@ function DataToColor:InitActionBarCostQueue()
     for slot = 1, DataToColor.C.MAX_ACTIONBAR_SLOT do
         if HasAction(slot) then
             DataToColor:populateActionbarCost(slot)
+        end
+    end
+end
+
+function DataToColor:InitActionBarCastTimeQueue()
+    for slot = 1, DataToColor.C.MAX_ACTIONBAR_SLOT do
+        if HasAction(slot) then
+            DataToColor:populateActionbarCastTime(slot)
         end
     end
 end
@@ -861,23 +910,114 @@ function DataToColor:PopulateSpellBookInfo()
     DataToColor:PopulateSpellInRangeNames()
 end
 
+-- Set of the ids sent in the first block, so the second one can skip them.
+-- Reused across calls; fully cleared on entry.
+local spellBookHighestSent = {}
+
 function DataToColor:InitSpellBookQueue()
-    for _, id in pairs(DataToColor.S.playerSpellBookIdHighest) do
+    local S = DataToColor.S
+
+    -- First block: the highest rank of each spell, headed by its count. This is what the
+    -- bot gates DataReady on, so it stays exactly as small and as fast as it was - the
+    -- lower ranks below are not worth stalling the agent for after a /dcflush.
+    local count = 0
+    for id in pairs(spellBookHighestSent) do
+        spellBookHighestSent[id] = nil
+    end
+
+    for _, id in pairs(S.playerSpellBookIdHighest) do
+        count = count + 1
+        spellBookHighestSent[id] = true
+    end
+
+    DataToColor.spellBookQueue:push(QUEUE_COUNT_MARKER + count)
+    for _, id in pairs(S.playerSpellBookIdHighest) do
         DataToColor.spellBookQueue:push(id)
     end
+
+    -- Second block: every remaining rank, so the bot can tell rank 2 from rank 7 - it
+    -- otherwise only ever sees the highest and cannot work out which rank to train next.
+    -- Terminated by a sentinel instead of counted, see SPELLBOOK_ALL_RANKS_END.
+    -- Cata and MoP dropped ranks entirely, so there this block is simply empty.
+    for id in pairs(S.playerSpellBookId) do
+        if not spellBookHighestSent[id] then
+            DataToColor.spellBookQueue:push(id)
+        end
+    end
+
+    DataToColor.spellBookQueue:push(SPELLBOOK_ALL_RANKS_END)
 end
 
+-- MoP 5.0 replaced the tab/tier/column/rank trees with six tiers of a single pick
+-- each and deleted GetNumTalentTabs/GetNumTalents with them. GetTalentInfo survives
+-- with a different signature, so it is not a usable probe - GetTalentRowSelectionInfo
+-- is, and it reports which talent of a tier is taken.
+local MOP_TALENT_TIERS = 6      -- MAX_TALENT_TIERS is nil until Blizzard_TalentUI loads
+local MOP_TALENT_COLUMNS = 3
+local MOP_TALENT_TAB = 1        -- 5.0 has no tabs, but the wire format still carries one
+local MOP_TALENT_RANK = 1       -- one pick per tier, so a taken talent is always rank 1
+
+-- Collected before anything is pushed so the batch can be headed by its count.
+-- Reused across calls; only ever read back up to the count of the current batch.
+local talentHashes = {}
+
 function DataToColor:InitTalentQueue()
-    for tab = 1, GetNumTalentTabs(false, false) do
-        for i = 1, GetNumTalents(tab) do
-            local _, _, tier, column, currentRank = GetTalentInfo(tab, i)
-            if currentRank > 0 then
-                --                     1-3 +         1-11 +          1-4 +         1-5
-                local hash = tab * 1000000 + tier * 10000 + column * 10 + currentRank
-                DataToColor.talentQueue:push(hash)
-                --DataToColor:Print("talentQueue tab: ", tab, " | tier: ", tier, " | column: ", column, " | rank: ", currentRank, " | hash: ", hash)
+    -- The C# TalentReader copes with an empty batch - TalentDB loads talent.json
+    -- through LoadJsonSafe, and some clients ship none. Bailing rather than raising
+    -- matters here: an error took out InitUpdateQueues on 5.4.8 and left every
+    -- later queue uninitialised.
+    local count = 0
+
+    if GetNumTalentTabs and GetNumTalents then
+        for tab = 1, GetNumTalentTabs(false, false) do
+            for i = 1, GetNumTalents(tab) do
+                local _, _, tier, column, currentRank = GetTalentInfo(tab, i)
+                if currentRank > 0 then
+                    count = count + 1
+                    --                              1-3 +         1-11 +          1-4 +         1-5
+                    talentHashes[count] = tab * 1000000 + tier * 10000 + column * 10 + currentRank
+                    --DataToColor:Print("talentQueue tab: ", tab, " | tier: ", tier, " | column: ", column, " | rank: ", currentRank)
+                end
             end
         end
+    elseif GetTalentRowSelectionInfo then
+        -- GetTalentInfo(index) over the flat grid answers
+        --   name, texture, tier, column, selected, available
+        -- with tier and column already 1-based, which is what the hash wants.
+        --
+        -- Taking them from here rather than from GetTalentRowSelectionInfo, whose
+        -- second return is the talent's INDEX and not its column: on a level 90 with
+        -- every tier taken it reports 1, 4, 8, 10, 13, 18. Using those as columns put
+        -- 13 into the hash, which decoded as column 3 and rendered the wrong talent,
+        -- while 4, 8, 10 and 18 matched no talent at all - and tier 1 looked correct
+        -- only because index 1 happens to equal column 1.
+        --
+        -- tonumber guards the pair, so a client answering a different shape yields no
+        -- talents instead of raising: raising here aborts InitUpdateQueues and leaves
+        -- every later queue dead.
+        for index = 1, MOP_TALENT_TIERS * MOP_TALENT_COLUMNS do
+            local _, _, tier, column, selected = GetTalentInfo(index)
+
+            tier = tonumber(tier)
+            column = tonumber(column)
+
+            if selected and tier and column then
+                count = count + 1
+                talentHashes[count] = MOP_TALENT_TAB * 1000000 + tier * 10000 + column * 10 + MOP_TALENT_RANK
+                --DataToColor:Print("talentQueue tier: ", tier, " | column: ", column)
+            end
+        end
+    end
+
+    -- Batch header, the same convention the spellbook and binding queues use. The
+    -- bot replaces its talent set on receiving it instead of merging into what it
+    -- already had: a respec picks different talents, and the hashes of the old ones
+    -- are never sent again, so nothing else would ever retire them. Sent even when
+    -- the count is zero - unlearning every talent has to clear the set too.
+    DataToColor.talentQueue:push(QUEUE_COUNT_MARKER + count)
+
+    for i = 1, count do
+        DataToColor.talentQueue:push(talentHashes[i])
     end
 end
 
@@ -900,10 +1040,14 @@ function DataToColor:CreateFrames()
         return band(rshift(i, 16), 255) / 255, band(rshift(i, 8), 255) / 255, band(i, 255) / 255, 1
     end
 
-    -- This function is able to pass numbers in range 0 to 9.99999 (6 digits)
-    -- converting them to a 6-digit integer.
-    local function float(self, f)
+    -- 20-bit fixed-point encoding for values in range 0 to 9.99999 (6 digits)
+    local function fixed20(self, f)
         return int(self, floor(f * 100000))
+    end
+
+    -- 24-bit fixed-point encoding for normalized 0-1 values
+    local function fixed24(self, p)
+        return int(self, floor(p * 16777215))
     end
 
     local function Pixel(func, value, slot)
@@ -932,11 +1076,6 @@ function DataToColor:CreateFrames()
         end
         return 0
     end
-
-    -- Precomputed static value for cell 46 (race/class/version never change)
-    local raceClassVersionCell = DataToColor.C.CHARACTER_RACE_ID * 10000
-        + DataToColor.C.CHARACTER_CLASS_ID * 100
-        + DataToColor.ClientVersion
 
     -- MiniMap settings cache (cells 16-17), recomputed every ~200 ticks
     local miniMapCache1 = 0
@@ -1081,17 +1220,17 @@ function DataToColor:CreateFrames()
             Pixel(int, 2000001, NUMBER_OF_FRAMES - 1)
 
             local x, y = DataToColor:GetPosition()
-            Pixel(float, x * 10, 1)
-            Pixel(float, y * 10, 2)
+            Pixel(fixed24, x, 1)
+            Pixel(fixed24, y, 2)
 
-            Pixel(float, GetPlayerFacing() or 0, 3)
+            Pixel(fixed20, GetPlayerFacing() or 0, 3)
             Pixel(int, DataToColor.map or 0, 4) -- MapUIId
             local playerLevel = UnitLevel(DataToColor.C.unitPlayer)
             Pixel(int, playerLevel, 5)
 
             local cx, cy = DataToColor:GetCorpsePosition()
-            Pixel(float, cx * 10, 6)
-            Pixel(float, cy * 10, 7)
+            Pixel(fixed24, cx, 6)
+            Pixel(fixed24, cy, 7)
 
             -- Boolean variables
             -- Use event-driven cached versions (reduces API calls from ~46 to ~5 per frame)
@@ -1245,6 +1384,30 @@ function DataToColor:CreateFrames()
                 Pixel(int, 0, 37)
             end
 
+            local castSlot, castTimeMs = DataToColor.actionBarCastTimeQueue:getTimed(globalTick)
+            if castSlot then
+                DataToColor.actionBarCastTimeQueue:removeWhenExpired(castSlot, globalTick)
+                Pixel(int, castSlot * 100000 + (castTimeMs or 0), 112)
+                --DataToColor:Print("castTime: ", castSlot, " ", castTimeMs)
+            else
+                Pixel(int, 0, 112)
+            end
+
+            -- Per-spell cast event log: drain one entry per tick.
+            -- The seq counter ticks up every time a NEW item is shifted, so
+            -- the bot can detect repeats (same encoded value pushed twice)
+            -- by watching the seq cell instead of just the value cell.
+            local beforeShiftTick = DataToColor.castEventQueue.lastChangedTick
+            local nextEvent = DataToColor.castEventQueue:shift(globalTick)
+            if nextEvent and nextEvent ~= 0 and DataToColor.castEventQueue.lastChangedTick ~= beforeShiftTick then
+                DataToColor.castEventSeq = DataToColor.castEventSeq + 1
+                if DataToColor.castEventSeq > 16777215 then
+                    DataToColor.castEventSeq = 1
+                end
+            end
+            Pixel(int, nextEvent or 0, 113)
+            Pixel(int, DataToColor.castEventSeq, 114)
+
             Pixel(int, UnitHealthMax(DataToColor.C.unitPet), 38)
             Pixel(int, UnitHealth(DataToColor.C.unitPet), 39)
 
@@ -1260,7 +1423,9 @@ function DataToColor:CreateFrames()
             Pixel(int, GetMoney() % 1000000, 44) -- Represents amount of money held (in copper)
             Pixel(int, floor(GetMoney() / 1000000), 45) -- Represents amount of money held (in gold) 
 
-            Pixel(int, raceClassVersionCell, 46)
+            -- Rebuilt by DetectPlayerCharacter, so a re-detect on
+            -- PLAYER_ENTERING_WORLD (or a Pandaren picking a faction) lands here.
+            Pixel(int, DataToColor.C.RACE_CLASS_VERSION_CELL, 46)
             Pixel(int, DataToColor.uiErrorMessageTime, 47)
             Pixel(int, DataToColor:shapeshiftForm(), 48) -- Shapeshift id https://wowwiki.fandom.com/wiki/API_GetShapeshiftForm
             Pixel(int, DataToColor:getRange(), 49) -- Represents minRange-maxRange ex. 0-5 5-15
@@ -1272,6 +1437,9 @@ function DataToColor:CreateFrames()
 
             Pixel(int, DataToColor:CastingInfoSpellId(DataToColor.C.unitPlayer), 53)                                                                                                                                                                               -- SpellId being cast
             Pixel(int, DataToColor:getAvgEquipmentDurabilityCached() * 100 + ((DataToColor.C.CHARACTER_CLASS_ID == 2 and UnitPower(DataToColor.C.unitPlayer, PowerType.HolyPower) or GetComboPoints(DataToColor.C.unitPlayer, DataToColor.C.unitTarget)) or 0), 54)                                                                                                                                                                                                                                                -- for paladin holy power or combo points
+
+            -- mainHand * 10000 + offHand * 100 + ranged, each 0-99 (99 = slot empty or item has no durability)
+            Pixel(int, DataToColor:getWeaponDurabilityCached(), 116)
 
             local playerBuffCount = DataToColor:populateAuraTimer(UnitBuff, DataToColor.C.unitPlayer, DataToColor.playerBuffTime)
             local playerDebuffCount = DataToColor:populateAuraTimer(UnitDebuff, DataToColor.C.unitPlayer, DataToColor.playerDebuffTime)
@@ -1324,6 +1492,8 @@ function DataToColor:CreateFrames()
                 --DataToColor:Print("gossipQueue: ", gossipNum)
                 Pixel(int, gossipNum, 73)
             end
+
+            Pixel(int, DataToColor.trainerQueue:shift(globalTick) or 0, 115)
 
             Pixel(int, DataToColor:CustomTrigger(DataToColor.customTrigger1), 74)
             Pixel(int, DataToColor:getMeleeAttackSpeed(DataToColor.C.unitPlayer), 75)
@@ -1503,9 +1673,17 @@ function DataToColor:CreateFrames()
 
             Pixel(int, DataToColor:Bits3Cached(), 100)
 
-            Pixel(int, DataToColor:getGuidFromUUID(DataToColor.softInteractGuid), 101)
-            Pixel(int, DataToColor:getNpcIdFromUUID(DataToColor.softInteractGuid), 102)
-            Pixel(int, DataToColor:getTypeFromUUID(DataToColor.softInteractGuid), 103)
+            -- Falls back to a live read when the cached guid is nil. The cache is only
+            -- ever filled by PLAYER_SOFT_INTERACT_CHANGED, while the bit the bot gates
+            -- on comes from UnitExists polled every frame - so before that event has
+            -- fired the bot saw "a unit is there" alongside an id of 0, and interacted
+            -- with something it could not identify.
+            local softGuid = DataToColor.softInteractGuid or
+                UnitGUID(DataToColor.C.unitSoftInteract)
+
+            Pixel(int, DataToColor:getGuidFromUUID(softGuid), 101)
+            Pixel(int, DataToColor:getNpcIdFromUUID(softGuid), 102)
+            Pixel(int, DataToColor:getTypeFromUUID(softGuid), 103)
 
             -- player debuff
             textureId, expireTime = DataToColor.playerDebuffTime:getTimed(globalTick)
@@ -1542,14 +1720,14 @@ function DataToColor:CreateFrames()
             Pixel(int, DataToColor.EnemySummonQueue:shift(globalTick) or 0, 110)
 
             local _, playerRunSpeed = GetUnitSpeed(DataToColor.C.unitPlayer)
-            Pixel(float, playerRunSpeed or 0, 111)
+            Pixel(fixed20, playerRunSpeed or 0, 111)
 
             local playerWorldZ = 0
             if UnitPosition then
                 local _, _, z = UnitPosition(DataToColor.C.unitPlayer)
                 playerWorldZ = z or 0
             end
-            Pixel(int, EncodeSignedZ(playerWorldZ), 112)
+            Pixel(int, EncodeSignedZ(playerWorldZ), PLAYER_WORLD_Z_FRAME)
 
             updatePartyFrames()
 
@@ -1717,16 +1895,21 @@ end
 -- Handles ranked spells like "Immolate(Rank 9)" by matching prefix
 function DataToColor:PS(name, slot)
     local bookType = "spell"
+    local best = nil
     for i = 1, 500 do
         local n = GetSpellBookItemName(i, bookType)
         if not n then break end
-        -- Match exact name or name with rank suffix (e.g., "Immolate" matches "Immolate(Rank 9)")
         if n == name or n:find("^" .. name .. "[%s%(]") then
-            PickupSpellBookItem(i, bookType)
-            PlaceAction(slot)
-            ClearCursor()
-            return true
+            best = i
+        elseif best then
+            break
         end
+    end
+    if best then
+        PickupSpellBookItem(best, bookType)
+        PlaceAction(slot)
+        ClearCursor()
+        return true
     end
     return false
 end

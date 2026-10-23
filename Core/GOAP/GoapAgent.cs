@@ -15,10 +15,17 @@ using System.Linq;
 using System.Numerics;
 using System.Threading;
 
+using static System.Diagnostics.Stopwatch;
+
 namespace Core.GOAP;
 
 public sealed partial class GoapAgent : IDisposable
 {
+    // The empty-plan state can flap at addon tick rate. The bare warning still
+    // logs every transition; the full report is rate limited so an oscillating
+    // state cannot flood the file users attach to issues.
+    private const double NO_PLAN_REPORT_INTERVAL_MS = 1000;
+
     private readonly ILogger logger;
     private readonly ILogger globalLogger;
 
@@ -41,7 +48,15 @@ public sealed partial class GoapAgent : IDisposable
     private readonly ManualResetEventSlim sessionPauseEvent;
 
     private readonly IScreenCapture screenCapture;
+    // Resolved only so the container constructs them - both subscribe in their
+    // own ctor and nothing else asks for them.
     private readonly IBagChangeTracker bagChangeTracker;
+    private readonly IMoneyChangeTracker moneyChangeTracker;
+    // Not behind the LogBagChanges toggle the other two share - a level-up is one line
+    // every few hours, not the per-item chatter that toggle exists to silence.
+    private readonly LevelChangeTracker levelChangeTracker;
+
+    private long lastNoPlanReport;
 
     private bool active;
     public bool Active
@@ -59,8 +74,13 @@ public sealed partial class GoapAgent : IDisposable
                     goal.OnGoapEvent(new AbortEvent());
                 }
 
-                input.Reset();
+                // Stop first: StopMoving decides which key to release from the
+                // input's own record of what is held, and Reset clears that
+                // record. Reversed, the stop reads an empty record, takes the
+                // "moving by interact key" branch and never releases the key
+                // the character is actually running on.
                 stopMoving.Stop();
+                input.Reset();
 
                 if (classConfig.Mode is Mode.AttendedGrind or Mode.Grind)
                 {
@@ -117,6 +137,8 @@ public sealed partial class GoapAgent : IDisposable
         CombatLog combatLog,
         CorpseTracker corpseTracker,
         IBagChangeTracker bagChangeTracker,
+        IMoneyChangeTracker moneyChangeTracker,
+        LevelChangeTracker levelChangeTracker,
         SessionStat sessionStat,
         StopMoving stopMoving,
         IGrindSessionHandler sessionHandler,
@@ -145,6 +167,8 @@ public sealed partial class GoapAgent : IDisposable
         this.combatLog = combatLog;
         this.corpseTracker = corpseTracker;
         this.bagChangeTracker = bagChangeTracker;
+        this.moneyChangeTracker = moneyChangeTracker;
+        this.levelChangeTracker = levelChangeTracker;
 
         SessionStat = sessionStat;
 
@@ -229,6 +253,7 @@ public sealed partial class GoapAgent : IDisposable
             else if (!wasEmpty)
             {
                 LogNewEmptyGoal(logger);
+                ReportNoPlan();
                 CurrentGoal?.OnExit();
                 CurrentGoal = null;
                 wasEmpty = true;
@@ -267,6 +292,30 @@ public sealed partial class GoapAgent : IDisposable
         return Plan.Count > 0 ? Plan.Pop() : null;
     }
 
+    /// <summary>
+    /// Dumps why nothing was runnable. Reuses <see cref="GoapPlanner.LastUsable"/>
+    /// rather than calling <see cref="GoapGoal.CanRun"/> again - Blacklist keeps
+    /// dedup state inside its check.
+    /// </summary>
+    private void ReportNoPlan()
+    {
+        if (!logger.IsEnabled(LogLevel.Warning))
+        {
+            return;
+        }
+
+        if (GetElapsedTime(lastNoPlanReport).TotalMilliseconds < NO_PLAN_REPORT_INTERVAL_MS)
+        {
+            return;
+        }
+
+        lastNoPlanReport = GetTimestamp();
+
+        LogNoPlanReport(logger,
+            NoPlanReport.Build(AvailableGoals, GoapPlanner.LastUsable,
+                WorldState, playerReader, bits, combatLog, State));
+    }
+
     private void UpdateWorldState()
     {
         AddonBits b = bits;
@@ -274,7 +323,11 @@ public sealed partial class GoapAgent : IDisposable
         bool dmgTaken = combatLog.DamageTakenCount() > 0;
         bool dmgDone = combatLog.DamageDoneCount() > 0;
         bool hasTarget = b.Target();
-        bool playerCombat = b.Combat();
+
+        // Not b.Combat(): a pet opener leaves the player unflagged until the mob
+        // walks over and swings, so every combat gated goal would sit out the first
+        // seconds of a pull the pet already won. See CombatLog.PetEngaged.
+        bool playerCombat = combatLog.PlayerOrPetCombat();
 
         int data =
             (B(hasTarget) << (int)GoapKey.hastarget) |
@@ -284,17 +337,18 @@ public sealed partial class GoapAgent : IDisposable
             (B(dmgTaken || dmgDone) << (int)GoapKey.damagetakenordone) |
             (B(hasTarget && !b.Target_Dead()) << (int)GoapKey.targetisalive) |
 
-            (B((hasTarget &&
+            (B(((hasTarget &&
             playerReader.TargetHealthPercent() < 30) ||
             playerReader.TargetTarget is UnitsTarget.Me or
-                UnitsTarget.Pet or UnitsTarget.PartyOrPet) << (int)GoapKey.targettargetsus) |
+                UnitsTarget.Pet or UnitsTarget.PartyOrPet) &&
+                !combatLog.ToPull.Contains(playerReader.TargetGuid)) << (int)GoapKey.targettargetsus) |
 
             (B(playerCombat) << (int)GoapKey.incombat) |
             (B(playerReader.PetTarget() && !b.PetTarget_Dead()) << (int)GoapKey.pethastarget) |
             (B(mountHandler.IsMounted()) << (int)GoapKey.ismounted) |
             (B(playerReader.WithInPullRange()) << (int)GoapKey.withinpullrange) |
             (B(playerReader.WithInCombatRange()) << (int)GoapKey.incombatrange) |
-            (B(bits.Combat() && bits.Target_Combat() && combatLog.ToPullCount() > 0) << (int)GoapKey.pulled) |
+            (B(playerCombat && bits.Target_Combat() && combatLog.ToPullCount() > 0) << (int)GoapKey.pulled) |
             (B(b.Dead()) << (int)GoapKey.isdead) |
             (B(State.LootableCorpseCount > 0) << (int)GoapKey.shouldloot) |
             (B(State.GatherableCorpseCount > 0) << (int)GoapKey.shouldgather) |
@@ -362,7 +416,11 @@ public sealed partial class GoapAgent : IDisposable
 
         BroadcastGoapEvent(GoapKey.producedcorpse, true);
 
-        LogActiveKillDetected(logger, SessionStat.Kills, State.LastCombatKillCount, combatLog.DamageTakenCount());
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            int damageTakenCount = combatLog.DamageTakenCount();
+            LogActiveKillDetected(logger, SessionStat.Kills, State.LastCombatKillCount, damageTakenCount);
+        }
     }
 
     public void PlayerDied()
@@ -439,6 +497,12 @@ public sealed partial class GoapAgent : IDisposable
         Level = LogLevel.Warning,
         Message = "New Plan= NO PLAN")]
     static partial void LogNewEmptyGoal(ILogger logger);
+
+    [LoggerMessage(
+        EventId = 0054,
+        Level = LogLevel.Warning,
+        Message = "{report}")]
+    static partial void LogNoPlanReport(ILogger logger, string report);
 
     #endregion
 }

@@ -7,6 +7,7 @@ using SharedLib;
 using System;
 using System.Collections.Specialized;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Numerics;
 using System.Text;
 
@@ -30,7 +31,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
     private const int PartyPosYOffset = 6;
     private const int PartyNameOffset = 8;
     private const int PartyClassLevelOffset = 10;
-    private const int PlayerWorldZOffset = 112;
+    public const int PlayerWorldZOffset = 120;
 
     private const int EncodedZBias = 500_000;
     private const float EncodedZScale = 100f;
@@ -136,8 +137,8 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
     public float WorldPosZ { get; set; } // MapZ not exists. Alias for WorldLoc.Z
 
-    public float MapX => reader.GetFixed(1) * 10;
-    public float MapY => reader.GetFixed(2) * 10;
+    public float MapX => reader.GetFixed24(1);
+    public float MapY => reader.GetFixed24(2);
 
     public Vector3 TargetMapPos
     {
@@ -154,7 +155,7 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
         }
     }
 
-    public float Direction => reader.GetFixed(3);
+    public float Direction => reader.GetFixed20(3);
 
     public float _Direction() => Direction;
 
@@ -165,8 +166,8 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
     public RecordInt Level { get; } = new(5);
 
     public Vector3 CorpseMapPos => new(CorpseMapX, CorpseMapY, 0);
-    public float CorpseMapX => reader.GetFixed(6) * 10;
-    public float CorpseMapY => reader.GetFixed(7) * 10;
+    public float CorpseMapX => reader.GetFixed24(6);
+    public float CorpseMapY => reader.GetFixed24(7);
 
     public int HealthMax() => reader.GetInt(10);
     public int HealthCurrent() => reader.GetInt(11);
@@ -206,28 +207,17 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
     public bool TargetIsElite() => TargetClassification == UnitClassification.Elite;
 
-    public int Money => reader.GetInt(44) + (reader.GetInt(45) * 1000000);
+    // Copper, split across two cells because one cannot hold a full purse.
+    public RecordInt Money { get; } = new(44, 45, 1000000);
 
-    // RACE_ID * 10000 + CLASS_ID * 100 + ClientVersion
-    public UnitRace Race => (UnitRace)(reader.GetInt(46) / 10000);
+    // FACTION_ID * 1000000 + RACE_ID * 10000 + CLASS_ID * 100 + ClientVersion
+    public UnitRace Race => (UnitRace)(reader.GetInt(46) / 10000 % 100);
     public UnitClass Class => (UnitClass)(reader.GetInt(46) / 100 % 100);
     public ClientVersion Version => (ClientVersion)(reader.GetInt(46) % 100);
 
-    public PlayerFaction Faction => Race switch {
-        UnitRace.Human => PlayerFaction.Alliance,
-        UnitRace.Dwarf => PlayerFaction.Alliance,
-        UnitRace.NightElf => PlayerFaction.Alliance,
-        UnitRace.Gnome => PlayerFaction.Alliance,
-        UnitRace.Draenei => PlayerFaction.Alliance,
-        UnitRace.Worgen => PlayerFaction.Alliance,
-        UnitRace.Orc => PlayerFaction.Horde,
-        UnitRace.Tauren => PlayerFaction.Horde,
-        UnitRace.Undead => PlayerFaction.Horde,
-        UnitRace.Troll => PlayerFaction.Horde,
-        UnitRace.BloodElf => PlayerFaction.Horde,
-        UnitRace.Goblin => PlayerFaction.Horde,
-        _ => throw new ArgumentNullException(nameof(Faction)),
-    };
+    // Sent by the addon rather than derived from the race: a Pandaren is
+    // Neutral until the Wandering Isle is finished, then becomes either side.
+    public PlayerFaction Faction => (PlayerFaction)(reader.GetInt(46) / 1000000);
 
     // 47 empty
 
@@ -262,6 +252,19 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
     public int ComboPoints() => reader.GetInt(54) % 100;
     public int AvgEquipDurability() => reader.GetInt(54) / 100; // 0-99
 
+    public const int WeaponDurabilityCell = 116;
+
+    // mainHandDurability * 10000 + offHandDurability * 100 + rangedDurability
+    // Each is 0-99, where 99 also covers an empty slot or an equipped item that
+    // has no durability - a thrown weapon, an off hand tome, a relic.
+    public int MainHandDurability() => reader.GetInt(WeaponDurabilityCell) / 10000;
+    public int OffHandDurability() => reader.GetInt(WeaponDurabilityCell) / 100 % 100;
+    public int RangedDurability() => reader.GetInt(WeaponDurabilityCell) % 100;
+
+    // The weapon closest to breaking. 99 = nothing equipped that can break.
+    public int MinWeaponDurability() =>
+        Math.Min(MainHandDurability(), Math.Min(OffHandDurability(), RangedDurability()));
+
     public AuraCount AuraCount => new(reader, 55);
 
     public int TargetId => reader.GetInt(56);
@@ -283,8 +286,10 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
     public UI_ERROR CastState => (UI_ERROR)CastEvent.Value;
     public RecordInt CastSpellId { get; } = new(63);
 
+    public const int PetTargetGuidCell = 69;
+
     public int PetGuid => reader.GetInt(68);
-    public int PetTargetGuid => reader.GetInt(69);
+    public int PetTargetGuid => reader.GetInt(PetTargetGuidCell);
     public bool PetTarget() => PetTargetGuid != 0;
 
     public int CastCount => reader.GetInt(70);
@@ -345,7 +350,15 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
     public int SoftInteract_Guid => reader.GetInt(101);
 
-    public float RunSpeed => reader.GetFixed(111);
+    public float RunSpeed => reader.GetFixed20(111);
+
+    private int previousHealthPercent;
+    private long lastDamageTakenTimestamp;
+
+    public int SinceDamageTakenMs() =>
+        lastDamageTakenTimestamp == 0
+            ? int.MaxValue
+            : (int)Stopwatch.GetElapsedTime(lastDamageTakenTimestamp).TotalMilliseconds;
 
     public int SoftInteract_Id => reader.GetInt(102);
 
@@ -375,6 +388,8 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
         LootEvent.UpdateIncludeLeastSignificantDigit(reader, 10);
         LootWindowCount.UpdateExcludingLeastSignificantDigits(reader, 10);
 
+        Money.Update(reader);
+
         GCD.Update(reader);
 
         UIErrorTime.Update(reader);
@@ -385,6 +400,13 @@ public sealed partial class PlayerReader : IMouseOverReader, IReader
 
         if (UIError != UI_ERROR.NONE)
             LastUIError = UIError;
+
+        int currentHealth = HealthPercent();
+        if (currentHealth < previousHealthPercent && previousHealthPercent > 0)
+        {
+            lastDamageTakenTimestamp = Stopwatch.GetTimestamp();
+        }
+        previousHealthPercent = currentHealth;
     }
 
     public void Reset()

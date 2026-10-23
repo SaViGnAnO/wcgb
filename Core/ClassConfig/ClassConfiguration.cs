@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 
+using SharedLib;
+
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
@@ -115,6 +117,31 @@ public sealed partial class ClassConfiguration
     public List<string> SideActivityRequirements = [];
     public PathSettings[] Paths { get; set; } = [];
 
+    /// <summary>
+    /// External <see cref="PathSettings"/> group files, relative to Json/path/. Each file is a
+    /// bare array of PathSettings, so a group can be shared across profiles instead of pasted
+    /// into each one.
+    ///
+    /// <para>Loaded in listed order and appended after any inline <see cref="Paths"/>. Order is
+    /// not cosmetic: it decides each route goal's GOAP cost through
+    /// <see cref="Core.Goals.FollowRouteGoal.COST_OFFSET"/>, so a profile keeps control of
+    /// priority by where it lists a group.</para>
+    /// </summary>
+    public string[] PathsFilenames { get; set; } = [];
+
+    /// <summary>
+    /// Seeds every randomised decision route generation makes. Null draws a fresh one per
+    /// session, which is then logged - so a run stays reproducible after the fact without
+    /// making every run identical. Set it to pin a route while testing.
+    /// </summary>
+    public int? Seed { get; set; }
+
+    /// <summary>
+    /// The seed actually in force, resolved once in <see cref="Initialise"/>.
+    /// </summary>
+    [JsonIgnore]
+    public int ResolvedSeed { get; private set; }
+
     public Mode Mode { get; set; } = Mode.Grind;
 
     public PartyOptions Party { get; set; } = new();
@@ -135,18 +162,19 @@ public sealed partial class ClassConfiguration
 
     public Dictionary<int, SchoolMask> NpcSchoolImmunity { get; } = [];
 
-    public Dictionary<string, int> IntVariables { get; } = [];
+    [JsonConverter(typeof(IntOrIntArrayDictionaryConverter))]
+    public Dictionary<string, int[]> IntVariables { get; } = [];
 
     public Dictionary<string, string> StringVariables { get; } = [];
 
     public KeyActions Pull { get; } = new();
-    public KeyActions Flee { get; } = new();
+    public KeyActions Flee { get; } = new() { KeyRequired = false };
     public KeyActions Combat { get; } = new();
     public KeyActions Adhoc { get; } = new();
     public KeyActions Parallel { get; } = new();
-    public KeyActions NPC { get; } = new();
+    public KeyActions NPC { get; } = new() { KeyRequired = false };
     public KeyActions AssistFocus { get; } = new();
-    public WaitKeyActions Wait { get; } = new();
+    public WaitKeyActions Wait { get; } = new() { KeyRequired = false };
     public FormKeyActions Form { get; } = new();
 
     /// <summary>
@@ -180,9 +208,58 @@ public sealed partial class ClassConfiguration
     public ConsoleKey TurnLeftKey { get; init; } = ConsoleKey.LeftArrow;
     public ConsoleKey TurnRightKey { get; init; } = ConsoleKey.RightArrow;
 
+    // Bound in-game to "Toggle Run/Walk". Unset (default) disables the spline
+    // follower's walk-speed approach into hairpins - it then just brakes+pivots.
+    public ConsoleKey WalkKey { get; init; }
+
     // Cached macro KeyActions for efficient re-resolution on action bar changes
     private readonly List<KeyAction> macroActions = [];
     public IReadOnlyList<KeyAction> MacroActions => macroActions;
+
+    [JsonIgnore]
+    private bool pathGroupsResolved;
+
+    /// <summary>
+    /// Appends every <see cref="PathsFilenames"/> group onto <see cref="Paths"/>, in listed
+    /// order, inline entries first.
+    ///
+    /// <para>Public and callable without <see cref="Initialise"/> on purpose: tooling that only
+    /// wants the routes reads <see cref="Paths"/> straight off a deserialized profile, and
+    /// would otherwise see the inline entries alone and silently miss every group.</para>
+    ///
+    /// <para>Runs at most once per instance - a second call is a no-op rather than a second
+    /// append.</para>
+    /// </summary>
+    /// <param name="pathRoot">Directory the group filenames are relative to (DataConfig.Path).</param>
+    /// <returns>True when at least one group file was read.</returns>
+    public bool ResolvePathGroups(string pathRoot)
+    {
+        if (pathGroupsResolved || PathsFilenames.Length == 0)
+            return false;
+
+        pathGroupsResolved = true;
+
+        List<PathSettings> combined = [.. Paths];
+
+        for (int i = 0; i < PathsFilenames.Length; i++)
+        {
+            string groupFile = PathsFilenames[i];
+            string groupPath = Path.Join(pathRoot, groupFile);
+
+            if (!File.Exists(groupPath))
+            {
+                throw new Exception(
+                    $"[{nameof(ClassConfiguration)}.{nameof(PathsFilenames)}[{i}]] " +
+                    $"`{groupFile}` file does not exists!");
+            }
+
+            combined.AddRange(
+                JsonConvert.DeserializeObject<PathSettings[]>(File.ReadAllText(groupPath)) ?? []);
+        }
+
+        Paths = [.. combined];
+        return true;
+    }
 
     public void Initialise(IServiceProvider sp, Dictionary<int, string> overridePathFile)
     {
@@ -195,6 +272,9 @@ public sealed partial class ClassConfiguration
         PlayerReader playerReader = sp.GetRequiredService<PlayerReader>();
 
         RecordInt globalTime = sp.GetRequiredService<AddonReader>().GlobalTime;
+
+        ResolvedSeed = Seed ?? Random.Shared.Next();
+        LogSeed(logger, ResolvedSeed, Seed.HasValue);
 
         if (requiresPath &&
             Paths == Array.Empty<PathSettings>() &&
@@ -231,12 +311,18 @@ public sealed partial class ClassConfiguration
             {
                 MailConfig = Newtonsoft.Json.JsonConvert.DeserializeObject<MailConfiguration>(
                     File.ReadAllText(mailPath)) ?? new MailConfiguration();
-                logger.LogInformation("Loaded mail config from {MailPath}", mailPath);
+                LogLoadedMailConfig(logger, mailPath);
             }
             else
             {
                 logger.LogWarning("Mail config file not found: {MailPath}", mailPath);
             }
+        }
+
+        int inlinePathCount = Paths.Length;
+        if (requiresPath && ResolvePathGroups(dataConfig.Path))
+        {
+            LogLoadedPathGroups(logger, PathsFilenames.Length, inlinePathCount, Paths.Length);
         }
 
         for (int i = 0; requiresPath && i < Paths.Length; i++)
@@ -251,7 +337,11 @@ public sealed partial class ClassConfiguration
                 settings.PathFilename = settings.OverridePathFilename;
             }
 
-            if (!File.Exists(Path.Join(dataConfig.Path, settings.PathFilename)))
+            // A generated path has no file, by design - the whole point is that the route
+            // comes from the client's spawn data instead. Only demand a file when one was
+            // asked for.
+            if (settings.Generate == null &&
+                !File.Exists(Path.Join(dataConfig.Path, settings.PathFilename)))
             {
                 if (!string.IsNullOrEmpty(OverridePathFilename))
                     throw new Exception(
@@ -272,6 +362,12 @@ public sealed partial class ClassConfiguration
         }
 
         RequirementFactory factory = new(sp, this);
+
+        // Vanilla has no TARGETFOCUS binding — use TARGETPARTYMEMBER1 instead
+        if (playerReader.Version == ClientVersion.SoM)
+        {
+            TargetFocus.BindingID = BindingID.TARGETPARTYMEMBER1;
+        }
 
         var baseActionKeys = GetByType<KeyAction>();
         foreach ((string _, KeyAction keyAction) in baseActionKeys)
@@ -450,7 +546,9 @@ public sealed partial class ClassConfiguration
                 user.BindingID = baseAction.BindingID;
 
                 if (!string.IsNullOrEmpty(baseAction.Requirement))
-                    user.Requirement += " " + baseAction.Requirement;
+                    user.Requirement = string.IsNullOrEmpty(user.Requirement)
+                        ? baseAction.Requirement
+                        : $"{user.Requirement} && {baseAction.Requirement}";
 
                 if (user.BeforeCastDelay == @default.BeforeCastDelay)
                     user.BeforeCastDelay = baseAction.BeforeCastDelay;
@@ -512,4 +610,21 @@ public sealed partial class ClassConfiguration
         Message = "[{prefix}] Init KeyActions")]
     static partial void LogInitKeyActions(ILogger logger, string prefix);
 
+    [LoggerMessage(
+        EventId = 0012,
+        Level = LogLevel.Information,
+        Message = "Loaded mail config from {MailPath}")]
+    static partial void LogLoadedMailConfig(ILogger logger, string mailPath);
+
+    [LoggerMessage(
+        EventId = 0013,
+        Level = LogLevel.Information,
+        Message = "Route generation seed {seed} (pinned: {pinned})")]
+    static partial void LogSeed(ILogger logger, int seed, bool pinned);
+
+    [LoggerMessage(
+        EventId = 0014,
+        Level = LogLevel.Information,
+        Message = "Loaded {groupCount} PathSettings group file(s): {inlineCount} inline + groups -> {totalCount} path(s)")]
+    static partial void LogLoadedPathGroups(ILogger logger, int groupCount, int inlineCount, int totalCount);
 }

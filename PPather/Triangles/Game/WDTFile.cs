@@ -161,12 +161,22 @@ internal sealed class WDTFile
         }
     }
 
+    /// <summary>
+    /// SMAreaInfo.flags bit 0 - this grid cell actually has an ADT on disk.
+    /// Only bit 0 means that: Cataclysm marks the open-ocean cells that make up
+    /// most of the grid with flag 2 (3257 of Azeroth's 4096, 3085 of Kalimdor's),
+    /// so testing the whole word for non-zero claims every cell has terrain and
+    /// the loader then throws FileNotFoundException on the first one. Pre-Cata
+    /// WDTs only ever store 0 or 1, so masking changes nothing for them.
+    /// </summary>
+    private const int AreaInfoHasAdt = 0x1;
+
     private void HandleMAIN(BinaryReader file, uint size)
     {
         // global map objects
         for (int index = 0; index < WDT.SIZE * WDT.SIZE; index++)
         {
-            wdt.maps[index] = file.ReadInt32() != 0;
+            wdt.maps[index] = (file.ReadInt32() & AreaInfoHasAdt) != 0;
             //file.ReadInt32(); // kasta
             file.BaseStream.Seek(sizeof(Int32), SeekOrigin.Current);
         }

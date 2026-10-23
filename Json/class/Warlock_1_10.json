@@ -1,0 +1,208 @@
+{
+  //"Mode": "AttendedGrind",
+  "Loot": true,
+  "PathsFilenames": [
+    "1-8_Human_Northshire.json",
+    "1-8_Draenei_AmmenVale.json",
+    "1-8_NightElf_Teldrassil.json",
+    "1-8_DwarfGnome_Coldridge.json",
+    "1-8_OrcTroll_ValleyOfTrials.json",
+    "1-8_Undead_Deathknell.json",
+    "1-8_Tauren_RedCloudMesa.json",
+    "1-8_BloodElf_SunstriderIsle.json"
+  ],
+  "Paths": [],
+  "IntVariables": {
+    "MIN_WATER%": 20,
+    "MIN_MANA_SHADOWBOLT%": 40,
+    "MIN_MANA_IMMOLATE%": 40,
+    "MIN_MANA_CORRUPTION%": 30,
+    "MIN_HEALTH_CAST%": 40,
+    "DOT_MIN_HEALTH": 50,
+
+    // Not SPELL_ prefixed on purpose - that prefix marks a trainer whitelist.
+    "TRAIN_COOLDOWN_SEC": 600,
+
+    "FLEE_MOB_COUNT": 1,
+    "FLEE_HP_LOW%": 60,
+
+    "SPELL_IMMOLATE": [348, 707, 1094, 2941, 11665, 11667, 11668, 25309],
+    "SPELL_CORRUPTION": [172, 6222, 6223, 7648, 11671, 11672, 25311],
+    "SPELL_SUMMON_IMP": [688]
+  },
+  "Flee": {
+    "Sequence": [
+      {
+        "Name": "Flee",
+        "Requirement": "(MobCount > FLEE_MOB_COUNT && Health% < FLEE_HP_LOW%) || TargetElite" 
+      }
+    ]
+  },
+  "Wait": {
+    "Sequence": [
+      {
+        "Cost": 0.9,
+        "Name": "User",
+        "Requirement": "MenuOpen || ChatInputVisible"
+      }
+    ]
+  },
+  "Pull": {
+    "Sequence": [
+      {
+        // let the pet pull - PetCanPull goes false once the pet is out of power,
+        // and a pet with nothing to cast stands still instead of closing to melee
+        "Name": "Approach",
+        "Requirements": [
+          "Has Pet",
+          "PetCanPull",
+          "MinRange > 20"
+        ]
+      },
+      {
+        "Name": "Immolate",
+        "Key": "4",
+        "AfterCastAuraExpected": true,
+        "Requirements": [
+          "!Has Pet || !PetCanPull",
+          "!Immolate",
+          "Spell:SPELL_IMMOLATE",
+          "Mana% > MIN_MANA_IMMOLATE%"
+        ]
+      },
+      {
+        "Name": "Shadow Bolt",
+        "Key": "2",
+        "Requirements": [
+          "!Has Pet || !PetCanPull",
+          "!Spell:SPELL_IMMOLATE",
+          "Mana% > MIN_MANA_SHADOWBOLT%"
+        ]
+      }
+    ]
+  },
+  "Combat": {
+    "Sequence": [
+      {
+        "Name": "Immolate",
+        "Key": "4",
+        "Requirements": [
+          "Has Pet",
+          "!Immolate",
+          "Spell:SPELL_IMMOLATE",
+          "TargetHealth% > DOT_MIN_HEALTH",
+          "Mana% > MIN_MANA_IMMOLATE%"
+        ],
+        "AfterCastWaitCastbar": true,
+        "Interrupt": "TargetHealth% < DOT_MIN_HEALTH",
+        "CancelOnInterrupt": true
+      },
+      {
+        "Name": "Corruption",
+        "Key": "5",
+        "Requirements": [
+          "!Corruption",
+          "Spell:SPELL_CORRUPTION",
+          "TargetHealth% > DOT_MIN_HEALTH",
+          "Mana% > MIN_MANA_CORRUPTION%"
+        ],
+        "AfterCastWaitCastbar": true,
+        "Interrupt": "TargetHealth% < DOT_MIN_HEALTH",
+        "CancelOnInterrupt": true
+      },
+      {
+        "Name": "Shadow Bolt",
+        "Key": "2",
+        "Requirements": [
+          "!HasRangedWeapon",
+          "TargetHealth% > MIN_HEALTH_CAST%",
+          "Mana% > MIN_MANA_SHADOWBOLT%"
+        ],
+        "AfterCastWaitCastbar": true,
+        "Interrupt": "TargetHealth% < MIN_HEALTH_CAST%",
+        "CancelOnInterrupt": true
+      },
+      {
+        "Name": "Shoot",
+        "Key": "0",
+        "Item": true,
+        "Requirements": [
+          "HasRangedWeapon",
+          "!Shooting",
+          "SpellInRange:1"
+        ]
+      },
+      {
+        "Name": "AutoAttack",
+        "Requirements": [
+          //"InMeleeRange",
+          "!HasRangedWeapon",
+          "!Casting && !Shooting"
+        ]
+      },
+      {
+        "Name": "Approach",
+        "Requirements": [
+          "!Casting",
+          "AutoAttacking && !MeleeSwinging",
+          "!SoftTargetDead"
+        ]
+      }
+    ]
+  },
+  "Adhoc": {
+    "Sequence": [
+      {
+        "Name": "Summon Imp",
+        "Key": "6",
+        "Requirements": [
+          "!Has Pet",
+          "Spell:SPELL_SUMMON_IMP"
+        ],
+        "AfterCastWaitCastbar": true
+      },
+      {
+        "Name": "Demon Skin",
+        "Key": "3",
+        "Requirement": "!Demon Skin"
+      },
+      {
+        "Name": "Food",
+        "Key": "=",
+        "Requirement": "Health% < MIN_WATER%"
+      },
+      {
+        "Name": "Drink",
+        "Key": "-",
+        "Requirement": "Mana% < MIN_WATER%"
+      }
+    ]
+  },
+  "NPC": {
+    "Sequence": [
+      {
+        "Cost": 6,
+        "Name": "Repair",
+        "Requirement": "Durability% < 35"
+      },
+      {
+        "Cost": 6,
+        "Name": "Sell",
+        "Requirements": [
+          "BagFull",
+          "BagGreyItem"
+        ]
+      },
+      {
+        "Name": "ClassTrainer",
+        "Requirements": [
+          "HasTrainableSpell",
+          "VendoredOrRepairedRecently",
+          "Money > 100", // 1 silver
+          "SecondsSinceTrained > TRAIN_COOLDOWN_SEC"
+        ],
+        "Cost": 6.1
+      }
+    ]
+  }
+}

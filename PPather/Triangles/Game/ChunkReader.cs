@@ -49,6 +49,7 @@ internal static class ChunkReader
     public const uint MOVI = 0b_01001101_01001111_01010110_01001001;
     public const uint MOVT = 0b_01001101_01001111_01010110_01010100;
     public const uint MCIN = 0b_01001101_01000011_01001001_01001110;
+    public const uint MCNK = 0b_01001101_01000011_01001110_01001011;
     public const uint MMDX = 0b_01001101_01001101_01000100_01011000;
     public const uint MDDF = 0b_01001101_01000100_01000100_01000110;
     public const uint MCNR = 0b_01001101_01000011_01001110_01010010;
@@ -60,14 +61,20 @@ internal static class ChunkReader
     [SkipLocalsInit]
     public static string ExtractString(ReadOnlySpan<byte> buf, int off)
     {
-        const byte nullTerminator = 0;
-        int length = buf[off..].IndexOf(nullTerminator);
-        if (length == -1 || length > buf.Length)
+        if ((uint)off >= (uint)buf.Length)
         {
-            length = buf.Length;
+            return string.Empty;
         }
 
-        return Encoding.ASCII.GetString(buf.Slice(off, length));
+        const byte nullTerminator = 0;
+        ReadOnlySpan<byte> rest = buf[off..];
+        int length = rest.IndexOf(nullTerminator);
+        if (length < 0)
+        {
+            length = rest.Length;
+        }
+
+        return Encoding.ASCII.GetString(rest.Slice(0, length));
     }
 
     // NOTE:

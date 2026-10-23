@@ -134,13 +134,15 @@ public sealed class TextReader : IReader
             case TextCommand.TotemName:
                 LastTotemName = text;
                 TotemNameReceived?.Invoke(text);
-                logger.LogInformation("Totem name received: {Name}", text);
+                if (logger.IsEnabled(LogLevel.Information))
+                    logger.LogInformation("Totem name received: {Name}", text);
                 break;
 
             case TextCommand.TargetName:
                 LastTargetName = text;
                 TargetNameReceived?.Invoke(text);
-                logger.LogDebug("Target name received: {Name}", text);
+                if (logger.IsEnabled(LogLevel.Debug))
+                    logger.LogDebug("Target name received: {Name}", text);
                 break;
 
             case TextCommand.ChatWhisper:
@@ -186,7 +188,8 @@ public sealed class TextReader : IReader
 
         ChatMessageReceived?.Invoke(chatType, author, message);
 
-        logger.LogInformation(entry.ToString());
+        if (logger.IsEnabled(LogLevel.Information))
+            logger.LogInformation(entry.ToString());
     }
 
     private void ProcessPartyName(string text)

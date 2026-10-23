@@ -1,0 +1,38 @@
+## Interface: 30403, 30405
+## Title: DataToColor
+## Author: FreeHongKongMMO
+## Notes: Displays data as colors (Classic Wrath)
+## Version: 1.13.3
+## RequiredDeps:
+## OptionalDeps: Ace3, LibRangeCheck, LibClassicCasterino
+## SavedVariables:
+
+embeds-ace3-v12.xml
+
+init.lua
+
+Collections.lua
+
+Versions.lua
+
+Constants.lua
+Query.lua
+BitCache.lua
+AuraCache.lua
+
+Storage.lua
+
+Diagnostics.lua
+
+EventHandlers.lua
+
+SetupDefaultBindings.lua
+
+ActionBarTextures.lua
+ActionBarMacros.lua
+
+DataToColor.lua
+
+SellJunk.lua
+Mail.lua
+Trainer.lua

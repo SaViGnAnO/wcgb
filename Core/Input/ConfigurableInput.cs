@@ -30,12 +30,81 @@ public sealed partial class ConfigurableInput
         input.TurnLeftKey = classConfig.TurnLeftKey;
         input.TurnRightKey = classConfig.TurnRightKey;
 
+        WalkKey = classConfig.WalkKey;
+
         input.InteractMouseover = classConfig.InteractMouseOver.ConsoleKey;
         input.InteractMouseoverModifier = classConfig.InteractMouseOver.Modifier;
         input.InteractMouseoverPress = classConfig.InteractMouseOver.PressDuration;
     }
 
-    public void Reset() => input.Reset();
+    /// <summary>
+    /// Releases every key this class can hold, including the class-configured
+    /// Jump: a jump key the game believes is held makes the character jump
+    /// continuously, and nothing else in the stack ever releases it.
+    /// </summary>
+    public void Reset()
+    {
+        input.Reset();
+
+        if (Jump.ConsoleKey != default)
+        {
+            input.SetKeyState(Jump.ConsoleKey, false, true);
+        }
+    }
+
+    /// <summary>Class-config fallback for the walk toggle when the game binding
+    /// (<see cref="BindingID.TOGGLERUN"/>) has not been extracted.</summary>
+    public ConsoleKey WalkKey { get; }
+
+    private const int WalkTapMs = 40;
+
+    /// <summary>Walk toggling is possible when the game reported TOGGLERUN or a
+    /// WalkKey fallback is configured.</summary>
+    public bool CanWalk =>
+        KeyReader.GameBindings.ContainsKey(BindingID.TOGGLERUN) || WalkKey != default;
+
+    /// <summary>
+    /// Taps "Toggle Run/Walk". Prefers the key EXTRACTED from the game
+    /// (BindingID.TOGGLERUN, including its modifier) so the exact code the client
+    /// expects is sent; falls back to the class-config WalkKey. No-op if neither.
+    /// </summary>
+    public void ToggleWalk(CancellationToken token = default)
+    {
+        ConsoleKey key = WalkKey;
+        ModifierKey modifier = ModifierKey.None;
+
+        bool fromBinding = KeyReader.GameBindings.TryGetValue(BindingID.TOGGLERUN, out var bound);
+        if (fromBinding)
+        {
+            key = bound.Key;
+            modifier = bound.Modifier;
+        }
+
+        if (key == default)
+        {
+            LogWalkToggleNoKey(logger);
+            return;
+        }
+
+        if (modifier != ModifierKey.None)
+            input.PressRandomWithModifier(key, modifier, WalkTapMs, token);
+        else
+            input.PressRandom(key, WalkTapMs, token);
+
+        LogWalkToggle(logger, key, fromBinding);
+    }
+
+    [LoggerMessage(
+        EventId = 0070,
+        Level = LogLevel.Debug,
+        Message = "Walk toggle -> key {key} (from extracted TOGGLERUN binding: {fromBinding})")]
+    static partial void LogWalkToggle(ILogger logger, ConsoleKey key, bool fromBinding);
+
+    [LoggerMessage(
+        EventId = 0071,
+        Level = LogLevel.Debug,
+        Message = "Walk toggle requested but no walk key bound (TOGGLERUN/WalkKey)")]
+    static partial void LogWalkToggleNoKey(ILogger logger);
 
     public void StartForward(bool forced)
     {
@@ -74,26 +143,21 @@ public sealed partial class ConfigurableInput
 
     public int PressRandom(KeyAction keyAction, CancellationToken token = default)
     {
-        int elapsedMs;
+        int elapsedMs = keyAction.HasModifier
+            ? input.PressRandomWithModifier(keyAction.ConsoleKey, keyAction.Modifier, keyAction.PressDuration, token)
+            : input.PressRandom(keyAction.ConsoleKey, keyAction.PressDuration, token);
 
         // Use modifier-aware pressing if the keyAction has a modifier
-        if (keyAction.HasModifier)
-        {
-            elapsedMs = input.PressRandomWithModifier(keyAction.ConsoleKey, keyAction.Modifier, keyAction.PressDuration, token);
-        }
-        else
-        {
-            elapsedMs = input.PressRandom(keyAction.ConsoleKey, keyAction.PressDuration, token);
-        }
 
         keyAction.SetClicked();
 
-        if (Log && keyAction.Log)
+        if (Log && keyAction.Log && logger.IsEnabled(LogLevel.Trace))
         {
+            string prefix = keyAction.Modifier.ToPrefix();
             if (keyAction.BaseAction)
-                LogBaseActionPressRandom(logger, keyAction.Name, keyAction.ConsoleKey, keyAction.Modifier.ToPrefix(), elapsedMs);
+                LogBaseActionPressRandom(logger, keyAction.Name, keyAction.ConsoleKey, prefix, elapsedMs);
             else
-                LogKeyActionPressRandom(logger, keyAction.Name, keyAction.ConsoleKey, keyAction.Modifier.ToPrefix(), elapsedMs);
+                LogKeyActionPressRandom(logger, keyAction.Name, keyAction.ConsoleKey, prefix, elapsedMs);
         }
 
         return elapsedMs;
@@ -206,6 +270,28 @@ public sealed partial class ConfigurableInput
     public void PressTargetOfTarget(CancellationToken token = default) => PressRandom(TargetTargetOfTarget, token);
 
     public void PressJump(CancellationToken token = default) => PressRandom(Jump, token);
+
+    /// <summary>
+    /// How long Jump is held to swim upward while drowning.
+    /// </summary>
+    public const int DROWNING_ASCEND_MS = 800;
+
+    /// <summary>
+    /// Holds Jump so a swimming character actually ascends. A tap barely lifts
+    /// them, which is why the drowning branches used to fire on every frame and
+    /// still not surface - from the outside that reads as a stuck spacebar.
+    /// <para>Press and release happen inside this call. Cancelling only cuts the
+    /// hold short: PressFixed waits on the token handle and posts the key-up
+    /// afterwards either way, so the key cannot be left latched.</para>
+    /// </summary>
+    public void PressJumpAscend(CancellationToken token = default)
+    {
+        if (Jump.ConsoleKey == default)
+            return;
+
+        input.PressFixed(Jump.ConsoleKey, DROWNING_ASCEND_MS, token);
+        Jump.SetClicked();
+    }
 
     public void PressPetAttack(CancellationToken token = default) => PressRandom(PetAttack, token);
 

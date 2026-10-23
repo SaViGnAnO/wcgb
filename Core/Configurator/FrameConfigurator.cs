@@ -13,7 +13,7 @@ using System.Threading;
 
 namespace Core;
 
-public sealed class FrameConfigurator : IDisposable
+public sealed partial class FrameConfigurator : IDisposable
 {
     private enum Stage
     {
@@ -113,7 +113,7 @@ public sealed class FrameConfigurator : IDisposable
             case Stage.DetectRunningGame:
                 if (process.IsRunning)
                 {
-                    if (auto)
+                    if (auto && logger.IsEnabled(LogLevel.Information))
                     {
                         logger.LogInformation(
                             "Found WowProcess with pid={Id} {ProcessName}",
@@ -148,7 +148,7 @@ public sealed class FrameConfigurator : IDisposable
                     AddonNotVisible = false;
                     stage++;
 
-                    if (auto)
+                    if (auto && logger.IsEnabled(LogLevel.Information))
                     {
                         logger.LogInformation("Client window: {ScreenRect}", screenRect);
                     }
@@ -164,9 +164,11 @@ public sealed class FrameConfigurator : IDisposable
                         logger.LogError("Addon is not installed!");
                         return false;
                     }
-                    logger.LogInformation("Addon installed! Version: {Version}", version);
-
-                    logger.LogInformation("Enter configuration mode.");
+                    if (logger.IsEnabled(LogLevel.Information))
+                    {
+                        logger.LogInformation("Addon installed! Version: {Version}", version);
+                        logger.LogInformation("Enter configuration mode.");
+                    }
                     input.SetForegroundWindow();
                     wait.Fixed(INTERVAL);
                     ToggleInGameConfiguration();
@@ -181,7 +183,8 @@ public sealed class FrameConfigurator : IDisposable
                     {
                         DataFrameMeta = temp;
                         stage = Stage.ValidateMetaSize;
-                        logger.LogInformation("{DataFrameMeta}", DataFrameMeta);
+                        if (logger.IsEnabled(LogLevel.Information))
+                            logger.LogInformation("{DataFrameMeta}", DataFrameMeta);
                     }
                 }
                 break;
@@ -193,7 +196,8 @@ public sealed class FrameConfigurator : IDisposable
                     {
                         DataFrameMeta = temp;
                         stage = Stage.ValidateMetaSize;
-                        logger.LogInformation("{DataFrameMeta}", DataFrameMeta);
+                        if (logger.IsEnabled(LogLevel.Information))
+                            logger.LogInformation("{DataFrameMeta}", DataFrameMeta);
                     }
                     else
                     {
@@ -269,7 +273,8 @@ public sealed class FrameConfigurator : IDisposable
                     DataFrameMeta temp = GetDataFrameMeta();
                     if (temp == DataFrameMeta.Empty)
                     {
-                        logger.LogDebug(temp.ToString());
+                        if (logger.IsEnabled(LogLevel.Debug))
+                            logger.LogDebug(temp.ToString());
                         stage = Stage.UpdateReader;
                     }
                 }
@@ -280,7 +285,8 @@ public sealed class FrameConfigurator : IDisposable
                     DataFrameMeta temp = GetDataFrameMeta();
                     if (temp == DataFrameMeta.Empty)
                     {
-                        logger.LogDebug(temp.ToString());
+                        if (logger.IsEnabled(LogLevel.Debug))
+                            logger.LogDebug(temp.ToString());
                         stage = Stage.UpdateReader;
                     }
                     else
@@ -307,8 +313,7 @@ public sealed class FrameConfigurator : IDisposable
                 {
                     if (auto)
                     {
-                        if (logger.IsEnabled(LogLevel.Information))
-                            logger.LogInformation("Found {ClientVersion} {Race} {Class}!", clientVersion.ToStringF(), race.ToStringF(), @class.ToStringF());
+                        LogFoundPlayer(logger, clientVersion, race, @class);
                     }
 
                     stage++;
@@ -430,12 +435,18 @@ public sealed class FrameConfigurator : IDisposable
 
         int value = reader.GetInt(46);
 
-        // RACE_ID * 10000 + CLASS_ID * 100 + ClientVersion
-        race = (UnitRace)(value / 10000);
+        // FACTION_ID * 1000000 + RACE_ID * 10000 + CLASS_ID * 100 + ClientVersion
+        race = (UnitRace)(value / 10000 % 100);
         @class = (UnitClass)(value / 100 % 100);
         version = (ClientVersion)(value % 100);
 
         return Enum.IsDefined(race) && Enum.IsDefined(@class) && Enum.IsDefined(version) &&
             race != UnitRace.None && @class != UnitClass.None && version != ClientVersion.None;
     }
+
+    [LoggerMessage(
+        EventId = 2000,
+        Level = LogLevel.Information,
+        Message = "Found {ClientVersion} {Race} {Class}!")]
+    static partial void LogFoundPlayer(ILogger logger, ClientVersion clientVersion, UnitRace race, UnitClass @class);
 }

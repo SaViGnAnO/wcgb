@@ -4,6 +4,8 @@ using Game;
 
 using Microsoft.Extensions.Logging;
 
+using Newtonsoft.Json;
+
 using SharedLib;
 
 using System;
@@ -166,6 +168,16 @@ public sealed partial class KeyAction
         set => features[ActionMask.UseMount] = value;
     }
 
+    /// <summary>
+    /// ClassTrainer entries only. Buys every spell the trainer offers and the player can
+    /// afford, instead of only the ones the profile whitelists under SPELL_ IntVariables.
+    /// </summary>
+    public bool TrainAll
+    {
+        get => features[ActionMask.TrainAll];
+        set => features[ActionMask.TrainAll] = value;
+    }
+
     public int AfterCastStepBack { get; set; }
 
     public string InCombat { get; set; } = "false";
@@ -198,16 +210,27 @@ public sealed partial class KeyAction
     private int canBeInterruptedTime;
     private bool canBeInterrupted;
 
+    /// <summary>
+    /// Set for entries whose goal never presses a key - the NPC, Flee and Wait sections,
+    /// which are driven entirely by their Requirements. Without it every such entry warns
+    /// about a missing key that it is not supposed to have.
+    /// </summary>
+    [JsonIgnore]
+    public bool KeyOptional { get; set; }
+
     public void InitSlot(ILogger logger)
     {
-        if (!KeyReader.ReadKey(logger, this) && !BaseAction)
+        if (!KeyReader.ReadKey(logger, this) && !BaseAction && !KeyOptional)
         {
             LogInputNoValidKey(logger, Name, Key, ConsoleKey);
         }
         else if (Slot == 0)
         {
             if (logger.IsEnabled(LogLevel.Information))
-                LogInputNonActionbar(logger, Name, Key, Modifier.ToPrefix(), ConsoleKey);
+            {
+                string prefix = Modifier.ToPrefix();
+                LogInputNonActionbar(logger, Name, Key, prefix, ConsoleKey);
+            }
         }
     }
 
@@ -234,8 +257,7 @@ public sealed partial class KeyAction
 
         if (HasForm)
         {
-            if (logger.IsEnabled(LogLevel.Information))
-                LogFormRequired(logger, Name, FormValue.ToStringF());
+            LogFormRequired(logger, Name, FormValue);
         }
 
         ConsoleKeyFormHash = ((int)FormValue * 1000) + (int)ConsoleKey;
@@ -359,7 +381,7 @@ public sealed partial class KeyAction
         EventId = 0002,
         Level = LogLevel.Information,
         Message = "[{name,-17}] Required Form: {form}")]
-    static partial void LogFormRequired(ILogger logger, string name, string form);
+    static partial void LogFormRequired(ILogger logger, string name, Form form);
 
     [LoggerMessage(
         EventId = 0003,

@@ -4,10 +4,13 @@
 
 # Master Of Puppets
 
-The project current goal is to supports the following client versions
+> **Tip:** This document is large — use `Ctrl+F` (or `Cmd+F` on Mac) to search for topics.
+
+The project current goal is to support the following client versions
 
 Legacy
-* 4.3.4 Cataclysm (2011) Work in progress - [Limitations](#supporting-cataclysm-classic-and-above-limitations) - [704](https://github.com/Xian55/WowClassicGrindBot/issues/704)
+* 4.3.4 Cataclysm (2011) — **supported**
+* 5.4.8 Mist of Pandaria (2013) — **not yet playable.** Pathing, navmesh, map and game data are all in place and the addon loads, but the addon still needs Mists-specific work. [702](https://github.com/Xian55/WowClassicGrindBot/issues/702)
 
 Classic (Since 2019)
 * 1.13.x Vanilla Classic
@@ -16,67 +19,294 @@ Classic (Since 2019)
     * **Note**: Season of Discovery: New abilities and runes not implemented, workaround [559](https://github.com/Xian55/WowClassicGrindBot/issues/559)
 * 2.5.x - Burning Crusade 
 * 3.4.x - Wrath of the Lich King 
-* 4.4.x - Cataclysm [Limitations](#supporting-cataclysm-classic-and-above-limitations)
-* 5.5.x - Mist of Pandaria [Limitations](#supporting-cataclysm-classic-and-above-limitations) - [TODO 702](https://github.com/Xian55/WowClassicGrindBot/issues/702)
+* 4.4.x - Cataclysm — **supported**
+* 5.5.x - Mist of Pandaria — **not yet playable**, same as 5.4.8 above. [702](https://github.com/Xian55/WowClassicGrindBot/issues/702)
+
+Wrath 3.3.5 is **not** planned: the bot depends on *interact with target*, which that client
+does not have, and adding it needs client modification. [704](https://github.com/Xian55/WowClassicGrindBot/issues/704)
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Overview](#overview)
+  - [Components](#components)
+  - [Architecture](#architecture) — full detail in [`docs/architecture.md`](docs/architecture.md)
+  - [Technical Challenges](#technical-challenges) — full detail in [`docs/technical-challenges.md`](docs/technical-challenges.md)
+  - [Pathfinders](#pathfinders)
+  - [Cataclysm and Mists of Pandaria support](#cataclysm-and-mists-of-pandaria-support)
+  - [Features](#features)
+  - [Media](#media)
+- [Issues, Ideas & Contributing](#issues-ideas--contributing)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Class Configuration](#class-configuration)
+- [Requirement](#requirement)
+- [Interrupt Requirement](#interrupt-requirement)
+- [Modes](#modes)
+- [User Interface](#user-interface)
+- [Recording a Path](#recording-a-path)
+- [V1 Remote Pathing - PathingAPI](#v1-remote-pathing---pathingapi)
+- [Macros](#macros)
+- [Troubleshooting / FAQ](#troubleshooting--faq)
+- [Important: Migration Guide for Existing Users](#important-migration-guide-for-existing-users)
 
 # Quick Start
 
 For experienced users, here's the minimal setup:
 
 1. **Prerequisites**: Windows 10+, [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-2. **Download**: Clone or download this repository
-3. **MPQ Files**: Download [MPQ files](#21-using-v1-localremote-pathing) and place in `Json\MPQ\`
+2. **Download**: Clone **with submodules** (the pathfinder pulls in the DotRecast submodule):
+   ```
+   git clone --recurse-submodules https://github.com/Xian55/WowClassicGrindBot.git
+   ```
+   Already cloned without it? Run `git submodule update --init --recursive`.
+3. **Navigation data**: download the pre-baked navmesh for your client's era - no WoW
+   client or MPQ files needed (see [Pathfinders](#setting-up-navigation--the-short-version)):
+   ```powershell
+   .\scripts\download-navmesh.ps1 -Era precata   # precata | cata | mop
+   ```
+   Only needed if you intend to **bake** tiles yourself or run `SpotAStar`:
+   [game archives](docs/legacy-pathing-setup.md) in `Json\MPQ\`.
 4. **Build**: Run `BlazorServer\build.bat` or open solution in Visual Studio
 5. **Configure**: Start WoW, run `BlazorServer\run.bat`, configure addon in browser
 6. **Play**: Load a class profile, press Start
 
 For detailed instructions, continue reading below.
 
-# Components
+# Overview
 
-- **Addon**: Modified [Happy-Pixels](https://github.com/FreeHongKongMMO/Happy-Pixels) to read the game state.
-- **Frontend**: [ASP.NET Core Razor components](https://docs.microsoft.com/en-us/aspnet/core/blazor/components/).
-- **BlazorServer**: [ASP.NET Core Blazor](https://docs.microsoft.com/en-us/aspnet/core/blazor) to show the state in a browser.
-- **HeadlessServer**: Run from CommandLine without Frontend. Requires valid configuration files present next to the executable.
-- Backend(**Core/Game**): written in C#. Screen capture, mouse and keyboard clicking. No memory tampering and DLL injection.
+## Components
 
-# Architecture
+The system is composed of two main layers that communicate through pixel color encoding — no memory tampering or DLL injection.
 
-Further detail about the architecture can be found in [Blog post](http://www.codesin.net/post/wowbot/).
+- **Lua Addon** (`Addons/DataToColor/`) — Runs inside the game client. Reads game state (player, target, buffs, equipment, action bars, etc.) and encodes it into pixel colors on hidden UI frames. Originally based on [Happy-Pixels](https://github.com/FreeHongKongMMO/Happy-Pixels), heavily rewritten for performance with event-driven caching.
+- **C# Backend** (13 .NET 10 projects) — Reads the encoded pixels via screen capture, decodes game state, makes decisions, and sends input back to the game via simulated keyboard/mouse messages. Runs as a web application ([BlazorServer](./BlazorServer/)), a CLI tool ([HeadlessServer](./HeadlessServer/)), or a standalone pathfinding service ([PathingAPI](./PathingAPI/)). See [`docs/architecture.md`](docs/architecture.md) for the full project breakdown.
+- **DotRecast fork** (`external/DotRecast`, git submodule) — [`Xian55/DotRecast @ wow-mods`](https://github.com/Xian55/DotRecast/tree/wow-mods), the navmesh library the whole navigation system is built on. Recast's usual workload is "bake offline on a build server, ship the result"; here a 34,000-yard world is baked **on the user's own machine, on first visit to an area, while the game client runs on the same box**, which is what the fork exists to make viable. Clone with `--recurse-submodules`.
 
-# Pathfinders
+The fork carries two kinds of change: `RcVec3f` is aliased to `System.Numerics.Vector3`
+so geometry crosses the boundary without conversion, and a measured bake-performance
+campaign narrowed the hot data structures (`areas` to `byte[]`, `RcCompactSpan` packed
+16→8 bytes like the C++ original). Every commit is gated on the baked output staying
+**byte-identical** — a per-tile SHA-256 over a 6-tile corpus — so none of it can change
+where the bot walks.
 
-Pathfinding allows the bot to navigate the game world - walking around obstacles, across terrain, and to your defined routes. Different pathfinder backends exist because WoW's map data format changed over time (MPQ to CASC).
+📖 **[Why WowClassicGrindBot forks DotRecast](https://github.com/Xian55/DotRecast/wiki/Why-WowClassicGrindBot-forks-DotRecast)**
+— the write-up of what was changed and why, with the numbers. Worth reading if you use
+DotRecast yourself: the findings are about DotRecast, not about this bot, and several
+apply to any C# Recast workload. It covers where the C# port pays a penalty against the
+C++ original (the memory-bound sweeps, ranked by how much wider the storage is), the
+benchmarking protocol that made the numbers trustworthy — interleaved A/B on an idle
+box, because run-to-run spread on a dev machine is ±10–15% and a single before/after
+pair proves nothing — and the two optimisations that looked obvious, were measured, and
+were **reverted for being slower**.
+
+The same material, commit by commit, is in
+[`docs/dotrecast-fork.md`](docs/dotrecast-fork.md).
+
+## Architecture
+
+The bot is a Lua addon that encodes game state into pixel colors, and a .NET solution
+that reads those pixels, decides what to do, and sends simulated input back. Thirteen
+projects, layered so each host composes only what it needs.
+
+**Full details — project layout, dependency flow, technology stack and design
+decisions — are in [`docs/architecture.md`](docs/architecture.md).**
+
+## Technical Challenges
+
+The game automation domain spans a lot of engineering ground: real-time screen capture,
+GPU compute, native interop, pathfinding, and a small expression language for class
+profiles. Each problem and how it was solved is written up separately.
+
+**See [`docs/technical-challenges.md`](docs/technical-challenges.md).**
+
+## Pathfinders
+
+Pathfinding allows the bot to navigate the game world - walking around obstacles, across terrain, and to your defined routes.
+
+### Setting up navigation — the short version
+
+**For every supported client there is one answer: the built-in navmesh engine, with
+tiles downloaded from the CDN.** It is already the default, so setup is a single
+command:
+
+```powershell
+.\scripts\download-navmesh.ps1 -Era precata     # use your client's era from the table
+```
+
+**You do not need the WoW client, `Json\MPQ`, or any external service to navigate.**
+The engine answers from the downloaded tiles alone.
+
+| Your client | Era | What to run | Engine |
+|---|---|---|---|
+| Vanilla / SoM 1.13–1.15 | `precata` | `download-navmesh.ps1 -Era precata` | Navmesh (default) |
+| TBC 2.5.x | `precata` | `download-navmesh.ps1 -Era precata` | Navmesh (default) |
+| Wrath 3.3.5 | `precata` | `download-navmesh.ps1 -Era precata` | Navmesh (default) |
+| Cataclysm **4.3.4** | `cata` | `download-navmesh.ps1 -Era cata` | Navmesh (default) |
+| Cataclysm **Classic 4.4.x** | `cata` | `download-navmesh.ps1 -Era cata` | Navmesh (default) |
+| Mists **5.4.8** | `mop` | `download-navmesh.ps1 -Era mop` | Navmesh (default) |
+| MoP **Classic 5.5.x** | `mop` | `download-navmesh.ps1 -Era mop` | Navmesh (default) |
+
+**Every client uses the same navmesh engine.** An original client and its modern
+re-release are the same world, so they share one era and one set of tiles: `cata` covers
+4.3.4 and Cata Classic 4.4.x, `mop` covers 5.4.8 and MoP Classic 5.5.x. Verified with a
+`cata` install holding zero game files: Elwynn→Stormwind 410 points, Ratchet→Crossroads
+569, the log reporting `disk-only, no game files`.
+
+Each era bundle is **self-contained**: `-Era cata` includes all four continents,
+`-Era mop` all five. Unlike the minimap art, navmesh tiles are **never** shared
+between eras — a stale mesh would route the bot through walls that exist in your
+world, so you download exactly one era and that is all you need.
+
+You only need the game archives in `Json\MPQ` if you want to **bake tiles yourself**
+(a custom agent config, or an era with no published bundle) or run the legacy
+`Pathing:Engine=SpotAStar`. Details below.
+
+### Running multiple bots
+
+**Give every instance its own in-process navmesh engine** - the default. Point each
+BlazorServer / HeadlessServer at the same downloaded tiles (a shared `data_config.json`
+`Root` is fine, the tile cache is read-only) and run them independently. No pathing
+server, no MPQ, nothing shared at runtime.
+
+**Do not point several bots at one `PathingAPI` (V1 Remote).** It serves one search at
+a time: the `RateLimit` filter answers a concurrent request with **HTTP 429**, which the
+V1 client turns into an empty route - indistinguishable from "no path exists", so the
+second bot silently fails to navigate. Measured with two simultaneous `WorldRoute`
+calls: one 200 in 555 ms, the other 429 in 8 ms. V1 Remote is meant for a single client
+plus the route visualiser, not as a shared service.
+
+That limit dates from the `SpotAStar` era, when a search cost seconds and serialising
+made sense; a warm navmesh query is 1-8 ms. Serving N bots from one process is worth
+doing and the per-continent pathfinder cache is already in place, but it needs the
+search made re-entrant first (today it is `SetLocations` then `DoSearch` on singleton
+state, and switching continent disposes the engine). **Until then, one navmesh per bot
+is the supported setup.**
+
+Cost of running them separately is small: with disk-only pathing there is **no ADT
+geometry in memory at all**, just the navmesh tile cache - tiles average ~16 KB and only
+the tens-to-hundreds around the active route stay resident.
+
+### Navmesh engine (default, recommended)
+
+The bot ships an in-process **[DotRecast](https://github.com/Xian55/DotRecast) navmesh** engine, now the default (`Pathing:Engine=Navmesh`). It runs from small **pre-baked navmesh tiles** and produces smooth, high-quality routes - the basis for the WASD spline follower. Versus the older backends it needs **no external service** and **no MPQ at query time**; the runtime query is pure managed, cross-platform code, and the tile data is tiny enough to distribute. Tiles are baked once from the game's MPQ files (or downloaded pre-baked).
+
+Recommended for **every supported client**, Vanilla through Mists. It supersedes both the legacy in-process grid pathfinder and the external navigation service.
+
+**Get the tiles — download pre-baked (no client/MPQ needed):**
+```powershell
+.\scripts\download-navmesh.ps1 -Force
+```
+Pulls the pre-baked tiles from the CDN into `Json\PathInfo\navmesh\<era>\` (destination honors your `data_config.json` `Root`). Options: `-Continent Northrend`, `-Era precata` / `-Era cata` / `-Era mop`. If you run a custom agent config (different settings hash), bake instead (see [navmesh bake skill](.claude/skills/navmesh-bake-upload/SKILL.md)).
+
+Downloaded tiles are enough on their own: with no `Json\MPQ\` at all, the navmesh
+engine runs **disk-only** - it answers path and height queries from the baked tiles
+and logs `disk-only, no game files` per continent. This matters most from Cataclysm
+onward, where a client is tens of GB and there is no reason to keep one installed
+just to walk over tiles that are already baked. Two things still need the archives,
+and say so plainly rather than failing obscurely:
+
+* **Baking** tiles (`POST api/PPather/Bake`, `BakeTile`, area-grid extraction) - it reads ADT geometry.
+* **`Pathing:Engine=SpotAStar`** - it walks the triangle world directly and has no tile cache to fall back to.
+
+> Bake settings feed the tile cache directory name, so a disk-only install must be
+> configured the same as whatever baked the tiles or it computes a different hash and
+> sees none of them. Outland is the live example: it only resolves with
+> `Navmesh:Bake:MinWorldZ: { "Expansion01": -700 }`, which is already the shipped default.
+
+Tiles are published per **geometry era**, each complete on its own:
+
+| era | clients | continents | tiles |
+|---|---|---|---|
+| `precata` | Vanilla, TBC, Wrath (`som`/`tbc`/`wrath`, `legacy_*`) | 4 | 51,113 |
+| `cata` | Cataclysm 4.3.4 **and Cata Classic 4.4.x** (`cata`, `legacy_cata`) | 8 | 58,537 |
+| `mop` | Mists 5.4.8 **and MoP Classic 5.5.x** (`mop`, `legacy_mop`) | 10 | 70,363 |
+
+> Cataclysm and Mists ship maps that are **not** zones of the four originals and have
+> their own MapID, so they need their own bake: Deepholm (646), the Lost Isles + Kezan
+> (648), Gilneas (654) and the Maelstrom (730), plus the Wandering Isle (860) on Mists.
+> Vashj'ir, Uldum, Mount Hyjal and Twilight Highlands are *not* among them - those are
+> zones on Azeroth/Kalimdor and come with the main continents.
+
+> The split matters: Cataclysm's Shattering rebuilt Azeroth and Kalimdor, so the eras are
+> genuinely different worlds and never share navmesh tiles. Mists is separate from Cataclysm
+> for the same reason - their old worlds are close but not identical, and Mists adds Pandaria.
+
+> **Cataclysm *Classic* (4.4.x) and MoP Classic (5.5.x) use the same bundles** as their
+> original counterparts — `ClientEra` maps them to the same era and the world is the same.
 
 **Which should you use?**
-- **Most users**: V1 Local is easiest (just download MPQ files, no extra services needed)
-- **Best quality**: V3 Remote provides the most accurate navigation but requires running an external service
-- **Cataclysm+**: Only V3 Remote works (game uses CASC format instead of MPQ)
+- **Everyone**: the default in-process **navmesh** engine - high quality, no external service. Download pre-baked tiles for your era.
+- **Baking your own tiles**: needs the original game archives (Vanilla-Wrath, 4.3.4, 5.4.8). The modern re-releases cannot bake from their own install — download the published bundles, or bake from the matching original client.
+- **Legacy fallbacks**: the grid engine (`Pathing:Engine=SpotAStar`) and V1/V3 Remote remain available; V3 (AmeisenNavigation) is no longer required for anything.
 
-* World map - Outdoor there are multiple solutions - *by default the app attempts to discover the available services in the following order*:
-    * **V3 Remote**: Out of process [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/multi-version-guess-z-coord) - Best navigation quality, works with all versions
-    * **V1 Remote**: Out of process [PathingAPI](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PathingAPI) more info [here](#v1-remote-pathing---pathingapi) - Good quality, MPQ-based
-    * **V1 Local**: In process [PPather](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PPather) - Simplest setup, MPQ-based
+### Legacy / alternative backends
+
+These predate the navmesh engine and are kept for compatibility. Outdoors the app can discover an available service in this order:
+
+* **V3 Remote**: Out of process [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/multi-version-guess-z-coord) - external service, superseded by the in-process navmesh engine on **every** client. Kept for compatibility; `PathingAPI` can also [answer its protocol directly](#serving-v3-clients-from-pathingapi-antcp) if you want the wire format without the external binary.
+* **V1 Remote**: Out of process [PathingAPI](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PathingAPI) more info [here](#v1-remote-pathing---pathingapi) - MPQ-based; can host either engine.
+* **V1 Local**: In process [PPather](https://github.com/Xian55/WowClassicGrindBot/tree/dev/PPather) - MPQ-based. Its legacy spot-grid A* engine (`Pathing:Engine=SpotAStar`) is superseded by the navmesh engine.
 * World map - Indoors pathfinder only works properly if `PathFilename` exists.
 * Dungeons / instances **not** supported!
 
-# Supporting Cataclysm Classic and above limitations
+## Cataclysm and Mists of Pandaria support
 
-With Cataclysm (MoP, and above), the navigation will be limited. Only V3 Remote will be support for now.
+**Pathfinding is uniform.** Every client from Vanilla to Mists uses the same in-process
+navmesh engine, running from pre-baked tiles. Nothing about Cataclysm or Mists needs a
+different pathfinder, an external service, or a game client on disk.
 
-V1 Local and V1 Remote does not have the capability as of this moment to read the CASC files only works with MPQs.
+| client | status | tiles |
+|---|---|---|
+| **4.3.4 Cataclysm (2011)** | supported | `-Era cata` |
+| **Cataclysm Classic 4.4.x** | supported | `-Era cata` |
+| **5.4.8 Mists (2013)** | not yet playable — addon work outstanding | `-Era mop` |
+| **MoP Classic 5.5.x** | not yet playable — addon work outstanding | `-Era mop` |
 
-# Features
+### What "not yet playable" means for Mists
 
-## General Features
+Everything below the addon is done — navmesh, Leaflet maps, DBC, creature, area, spawn
+and teleport data are all generated and published for both Mists clients, and the addon
+loads and runs without errors. What remains is Mists-specific addon work, tracked in
+[702](https://github.com/Xian55/WowClassicGrindBot/issues/702). Cataclysm, by contrast,
+is complete end to end including the addon.
+
+The game-data side was the harder half and is finished: Mists chunk formats match 4.3.4
+(same split ADT, MCNK header, M2 v272, WMO v17), and the two client-level differences are
+handled — it ships a 5.0.x `world.MPQ` plus 23 `wow-update-base-*.MPQ` **incremental patch
+archives** carrying updated terrain for **37% of root ADTs**, which the archive layer
+chains in build order, and its `holes_high_res` terrain holes are read. Mists is its own
+geometry era (`mop`) and never shares tiles with Cataclysm.
+
+Published: 26,972 Leaflet tiles across all ten continents and a 70,363-tile navmesh bake
+(`download-leaflet.ps1 -Era mop`, `download-navmesh.ps1 -Era mop`).
+
+### Baking your own tiles
+
+Only relevant if you want a custom agent config — otherwise download the published
+bundles and skip this.
+
+Baking reads terrain out of the game's own archives, so it needs an original client:
+Vanilla through Wrath, 4.3.4 Cataclysm, or 5.4.8 Mists. The modern re-releases
+(4.4.x, 5.5.x) store their data in a format the reader does not open, so they cannot bake
+from their own install — download the published tiles, or bake from the matching original
+client. The result is identical either way, because the re-release and its original are
+the same world.
+
+Developers: the measured per-client format differences and the storage design notes are in
+[the storage abstraction doc](docs/mpq-casc-storage-abstraction.md).
+
+## Features
+
+### General Features
 
 - Game fullscreen or windowed mode
 - Addon supports all available client languages
 - All playable classes is supported. Examples can be found under [/Json/class/](./Json/class)
 
-## Combat and Actionbar Features
+### Combat and Actionbar Features
 
-- Highly configurable combat rotation described in [Class Configuration](#12-class-configuration)
+- Highly configurable combat rotation described in [Class Configuration](#class-configuration)
 - Utilizing the Actionbar related APIs to retrieve ActionbarSlot (usable, cost)
 - **Automatic Keybinding Detection**: The addon reads your actual in-game keybindings, so you can use your own key setup
 - **Modifier Key Support**: Support for Shift, Ctrl, and Alt modifiers (e.g., `Shift-1`, `Alt-F1`). Note: Only single modifiers are supported, not combinations like `Shift-Alt-1`.
@@ -84,13 +314,13 @@ V1 Local and V1 Remote does not have the capability as of this moment to read th
 - **Auto-Setup**: Essential keybindings and custom actions are automatically configured on first run
 - Support for up to `34` action bar slots across Main, Bottom Right, and Bottom Left action bars
 
-## Navigation and Grind Features
+### Navigation and Grind Features
 
 - Pathfinder in the current zone to the grind location
 - Grind mobs in the described `PathFilename`
 - Blacklist certain NPCs
 
-## Resource Management
+### Resource Management
 
 - Loot and `GatherCorpse` which includes (Skin, Herb, Mine, Salvage)
 - Vendor goods
@@ -99,7 +329,7 @@ V1 Local and V1 Remote does not have the capability as of this moment to read th
 - Added Skinning Goal -> `GatherCorpse` (Skin, Herb, Mine, Salvage)
 - Introduced a concept of `Produce`/`Consume` corpses. Killing multiple enemies in a single combat can consume them all.
 
-## Additional Features
+### Additional Features
 
 - Corpse run
 - Semi-automated gathering [mode](#modes)
@@ -107,7 +337,7 @@ V1 Local and V1 Remote does not have the capability as of this moment to read th
 - Frontend Runtime Class Profile picker
 - Frontend Runtime Path Profile autocomplete search
 - Frontend Edit the loaded profile
-- Frontend `ActionbarPopulator` One click to populate Actionbar based on [Class Configuration](#12-class-configuration). Uses naming convention: lowercase = macro, capitalized = spell.
+- Frontend `ActionbarPopulator` One click to populate Actionbar based on [Class Configuration](#class-configuration). Uses naming convention: lowercase = macro, capitalized = spell.
 - Frontend `Key Bindings` page to view detected in-game keybindings and test key presses
 - Frontend `Spell Book` page to view known spells and their spell IDs
 - Frontend `Mail` page to configure mail recipient, exclusions, and view mailable inventory
@@ -116,7 +346,7 @@ V1 Local and V1 Remote does not have the capability as of this moment to read th
 - Support more resolutions
 - Addon is rewritten/reorganized with performance in mind(caching and reduce cell paint) to achieve game refresh rate speed
 
-# Media
+## Media
 
 <table>
     <tr>
@@ -150,11 +380,9 @@ V1 Local and V1 Remote does not have the capability as of this moment to read th
    <img alt="Death Knight 2" src="https://i.imgur.com/3nXwSoy.jpeg" width="50%">
 </a>
 
-# Issues and Ideas
+# Issues, Ideas & Contributing
 
 Create an issue with the given template.
-
-# Contribute
 
 You are welcome to create pull requests. Some ideas of things that could be improved:
 
@@ -162,7 +390,7 @@ You are welcome to create pull requests. Some ideas of things that could be impr
 * More route and class profiles
 * Feel free to ask questions by opening new issues
 
-# Getting it working
+# Installation
 
 This section guides you through the complete setup process. Here's an overview of what you'll do:
 
@@ -180,68 +408,36 @@ This section guides you through the complete setup process. Here's an overview o
 
 **Tip**: Steps 1-6 are one-time setup. After initial setup, you'll only need to start WoW, run the application, and load a profile.
 
-## 1. Download this repository
+## Download this Repository
 
 Put the contents of the repo into a folder, e.g., `C:\WowClassicGrindBot`. I am going to refer to this folder from now on, so just substitute your folder path.
 
-## 2.1 Using V1 Local/Remote Pathing
+> **Clone with submodules.** The pathfinder depends on the [DotRecast](https://github.com/Xian55/DotRecast) git submodule, so a plain `git clone` leaves `external/DotRecast` empty and the build will fail. Clone it in one step:
+> ```
+> git clone --recurse-submodules https://github.com/Xian55/WowClassicGrindBot.git
+> ```
+> If you already cloned without submodules (or you pull an update that changes them), run:
+> ```
+> git submodule update --init --recursive
+> ```
+> Downloading the repo as a ZIP does **not** include submodule contents — use `git clone --recurse-submodules`.
 
-- Download the MPQ route files.
-- These files are required to start the application!
+## Pathing setup
 
-**Vanilla:**
-[**common-2.MPQ**](https://mega.nz/file/vXQCBCha#m7COhB9HQd86a5iNAT0-fMLsc-BtoTRO1eIBJNrdTH8) (1.7Gb)
+Nothing to do — the in-process navmesh engine is the default and the tiles come from
+the CDN. If you have not already:
 
-**TBC:**
-[**expansion.MPQ**](https://mega.nz/file/Of4i2YQS#egDGj-SXi9RigG-_8kPITihFsLom2L1IFF-ltnB3wmU) (1.8Gb)
+```powershell
+.\scripts\download-navmesh.ps1 -Era precata     # or cata / mop
+```
 
-**WOTLK:**
-[**lichking.MPQ**](https://mega.nz/file/vDYWSTrK#fvaiuHpd-FTVsQT4ghGLK6QJLZyA87c1rlBEeu1_Btk) (2.5Gb)
+The older backends (V1 Local/Remote with MPQ archives, and the external V3
+AmeisenNavigation server) are **deprecated** and no longer needed by anything. Their
+setup instructions, and where to get the game archives if you want to *bake* your own
+tiles, live in
+[`docs/legacy-pathing-setup.md`](docs/legacy-pathing-setup.md).
 
-Copy these files under the **\Json\MPQ** folder (e.g., `C:\WowClassicGrindBot\Json\MPQ`)
-
-Technical details about **V1:**
-- Precompiled x86 and x64 [Stormlib](https://github.com/ladislav-zezula/StormLib)
-- Source code accessible, written in **C#**
-- Uses `*.mpq` files as source
-- Extracts the geometry on demand during runtime
-- Loads those `*.adt` files which are in use. Lower memory usage compared to V3
-- After calculating a path successfully, caches it under `Json\PathInfo\_CONTINENT_NAME_\`
-- Easy to visualize path steps and development iteratively
-
-## 2.2 Optional - Using V3 Remote Pathing
-
-Since [PR 585](https://github.com/Xian55/WowClassicGrindBot/issues/585) using a different branch!
-
-- Download the navmesh files.
-
-[**Vanilla + TBC**](https://mega.nz/file/7HgkHIyA#c_gzUeTadecWY0JDY3KT39ktfPGLs2vzt_90bMvhszk)
-
-[**Vanilla + TBC + Wrath**](https://mega.nz/file/zWQ2XIKI#9EKWOPyyTMfY1LACkcP_wioZ0poVIuaGh2xcRh4V9dw)
-
-[**Vanilla + TBC + Wrath + Cataclysm** - work in progress](https://mega.nz/file/7Og32TDA#5HpxZ8Sh1XvDNCmWbI8H-cOFEJzDmh97Z6FGrO2p3X4)
-
-1. Extract the `mmaps` and copy anywhere you want, like `C:\mmaps`
-1. Get the [multi-version-guess-z-coord branch](https://github.com/Xian55/AmeisenNavigation/tree/feature/multi-version-guess-z-coord)
-1. Open the solution file.
-1. Unload **AmeisenNavigation.Exporter** project(right click -> unload project)
-1. ![image](https://github.com/Xian55/WowClassicGrindBot/assets/367101/df443648-bb57-4200-ac99-ee26e723f120)
-1. Select **AmeisenNavigation.Server** Press rebuild.
-1. Navigate to the `AmeisenNavigation.Server` build(ex. `AmeisenNavigation.Server\build\x64\Release`) location and find `config.cfg`
-1. Edit the last line of the file to look like `sMmapsPath=C:\mmaps`
-1. Start `AmeisenNavigation.Server.exe`
-
-Technical details about **V3:**
-- Uses another project called [AmeisenNavigation](https://github.com/Xian55/AmeisenNavigation/tree/feature/multi-version-guess-z-coord)
-- Under the hood uses [Recast and Detour](https://github.com/recastnavigation/recastnavigation)
-- Source code is written in **C++**
-- Uses `*.mmap` files as source
-- Loads the whole continent navmesh data into memory. Higher base memory usage, at least around *~600mb*
-- It's super fast path calculations
-- Not always suitable for player movement.
-- Requires a considerable amount of time to tweak the navmesh config, then bake it
-
-## 3.1 System / Video Requirements
+## System / Video Requirements
 
 Tested resolutions with either full screen or windowed:
 * 1024 x 768
@@ -255,7 +451,7 @@ For Nvidia users, under Nvidia Control panel settings
 Known issues with other applications:
 * `f.lux` can affect final image color on the screen thus prevents NpcNameFinder to work properly.
 
-## 3.2 Screen Capture Methods
+## Screen Capture Methods
 
 The bot supports two screen capture backends:
 
@@ -267,9 +463,13 @@ The bot supports two screen capture backends:
 | **Default** | Yes | No (opt-in via `--reader WGC`) |
 | **GPU compute support** | Yes | Yes |
 
-DXGI is the default and most compatible. Use WGC if you want to capture the game window while it's behind other windows (requires Win10 2004+). If WGC is requested but unsupported, the application automatically falls back to DXGI.
+**DXGI** is the default and most compatible.
 
-## 3.3 In-game Requirements
+Use **WGC** if you want to capture the game window while it's behind other windows (requires Win10 2004+).
+
+If **WGC** is requested but unsupported, the application automatically falls back to **DXGI**.
+
+## In-game Requirements
 
 Required game client settings. Press `ESC` -> `System`
   * System > Graphics > Anti-Aliasing: `None`
@@ -281,7 +481,7 @@ Required game client settings. Press `ESC` -> `System`
   * Disable Glow effect - type in the chat `/console ffxGlow 0`
   * To keep/save this settings make sure to properly shutdown the game.
 
-## 3.4 Optional - Replace default game Font
+## Optional - Replace Default Game Font
 
 Highly recommended to replace the default in-game font with a much **Bolder** one with [this guide](https://classic.wowhead.com/guides/changing-wow-text-font)
 
@@ -289,7 +489,7 @@ Should be only concerned about `Friz Quadrata: the "Everything Else" Font` which
 
 Example - [Robot-Medium](https://fonts.google.com/specimen/Roboto?thickness=5) - Shows big improvement to the `NpcNameFinder` component which is responsible to find - friendly, enemy, corpse - names above NPCs head.
 
-## 3.5 Optional - Enable Minimum Character Name Size
+## Optional - Enable Minimum Character Name Size
 
 In the modern client under ESC > Options > Accessibility > General > **Minimum Character Name Size = 6**
 
@@ -299,13 +499,14 @@ However it has one downside, there's distance based alpha blending. It could cau
 
 More info [506](https://github.com/Xian55/WowClassicGrindBot/pull/506)
 
-## 4.1 Build Requirements
+## Build Requirements
 
 * Windows 10 and above
 * [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 * `AnyCPU`, `x86` and `x64` build supported.
+* Windows on ARM64 (e.g. a Win11 ARM64 VM on Apple Silicon) is supported natively — see [Windows on ARM64](#windows-on-arm64-apple-silicon).
 
-## 4.2 Build the solution
+## Build the Solution
 
 One of the following IDE or command line
 * [Visual Studio 2026](https://visualstudio.microsoft.com/downloads/)
@@ -322,7 +523,15 @@ or look at the `BlazorServer\build.bat`, or look at the `HeadlessServer\build.ba
 
 ![Build](images/build.png)
 
-## 5. BlazorServer Configuration process
+## Windows on ARM64 (Apple Silicon)
+
+The bot runs on Apple silicon through a Windows 11 ARM64 VM — the ARM64 StormLib build
+ships with the repo and is selected automatically. Setup steps are in
+[`docs/windows-arm64.md`](docs/windows-arm64.md).
+
+# Configuration
+
+## BlazorServer Configuration Process
 
 The app reads the game state using small blocks of color shown at the top of the screen by an Addon. This needs to be configured.
 
@@ -352,6 +561,12 @@ The app reads the game state using small blocks of color shown at the top of the
     * Complete `5. Frame Configuration` steps again
     * Click on `Auto` -> `Start` [Validate FrameConfiguration](../../wiki/Validating-FrameConfiguration)
 
+After syncing upstream changes, reinstall the bundled addon and repeat Frame Configuration
+before starting the bot. This fork uses 170 cells: action cast times remain in cell 112,
+player world Z is in cell 120, party members start at cell 121 with a stride of 12,
+and cells 168/169 carry the global clock and validation marker. An older addon or
+frame configuration is not compatible with this layout.
+
 ### Command-line Configuration Overrides
 
 `run.bat` forwards all arguments to `dotnet run`, so any setting from `BlazorServer/appsettings.json` can be overridden using `--Section:Property=Value` syntax.
@@ -367,7 +582,8 @@ run.bat --Reader:Type=WGC --Pathing:Mode=Local --Reader:UseGpu=true
 | `Process` | `Id` | int | `-1` | Any process ID | WoW process ID. `-1` for auto-detect |
 | `Reader` | `Type` | string | `DXGI` | `DXGI`, `WGC` | Screen reader type. `WGC` = Windows Graphics Capture (supports background window) |
 | `Reader` | `UseGpu` | bool | `false` | `true`, `false` | Use GPU acceleration for screen reading |
-| `Pathing` | `Mode` | string | `RemoteV3` | `Local`, `RemoteV1`, `RemoteV3` | Pathfinding mode |
+| `Pathing` | `Mode` | string | `Local` | `Local`, `RemoteV1`, `RemoteV3` | Pathfinding mode. `Local` uses the in-process navmesh — no external service, nothing to start. The remote modes are **probed, not required**: if `RemoteV3` gets no answer the bot falls back to `RemoteV1`, then to `Local`, so a misconfigured remote degrades rather than fails. The log line `Using Local(LocalPathingApi) engine Navmesh` confirms what was picked |
+| `Pathing` | `Engine` | string | `Navmesh` | `Navmesh`, `SpotAStar` | In-process engine for `Local` mode (and PathingAPI). `Navmesh` (default) answers queries from pre-baked DotRecast tiles under `Json/PathInfo/navmesh/<era>/`. With `Json\MPQ` present it also bakes missing tiles on demand; without it the engine runs **disk-only** and answers from the downloaded tiles alone. `SpotAStar` is the legacy spot-grid A* and always needs the archives |
 | `Pathing` | `hostv1` | string | `localhost` | hostname/IP | RemoteV1 pathing server host |
 | `Pathing` | `portv1` | int | `5001` | port number | RemoteV1 pathing server port |
 | `Pathing` | `hostv3` | string | `127.0.0.1` | hostname/IP | RemoteV3 pathing server host |
@@ -380,9 +596,9 @@ run.bat --Reader:Type=WGC --Pathing:Mode=Local --Reader:UseGpu=true
 
 These properties can also be edited directly in `BlazorServer/appsettings.json`.
 
-## 6. BlazorServer should restart and show the dashboard page.
+## BlazorServer Dashboard
 
-## 7 Optional - Running HeadlessServer
+## Optional - Running HeadlessServer
 
 Similar to BlazorServer project, except without Frontend. Should consume less system resources in general.
 
@@ -390,9 +606,9 @@ While the bot is running there's no way to adjust / tweak the values. In order t
 
 Firstly be sure to compile the project `HeadlessServer\build.bat`
 
-Everything has to be setup inside the [Class Configuration](#12-class-configuration) file, in prior.
+Everything has to be setup inside the [Class Configuration](#class-configuration) file, in prior.
 
-A successful [Configuration process](#5-blazorserver-configuration-process) has a result of a following configuration files
+A successful [Configuration process](#blazorserver-configuration-process) has a result of a following configuration files
 * `data_config.json`
 * `addon_config.json`
 * `frame_config.json`
@@ -408,27 +624,33 @@ A few use case when you need to run `install.bat`
 
 For normal quick startup of `HeadlessServer` please look at the `HeadlessServer\run.bat` or `HeadlessServer\rundev.bat`.
 
-**Required** cli parameter: relative [Class Configuration](#12-class-configuration) file name under the [/Json/class/](./Json/class) folder.
+**Required** cli parameter: relative [Class Configuration](#class-configuration) file name under the [/Json/class/](./Json/class) folder.
 
 **Optional** cli parameters:
 
+Long forms take **two** dashes (`--mode`), short forms one (`-m`).
+
 | cli | Description | Default Value | Possible Values |
 | ---- | ---- | ---- | ---- |
-| `-m`<br>`-mode` | Pathfinder type | `RemoteV3` | `Local` or `RemoteV1` or `RemoteV3` |
-| `-p`<br>`-pid` | World of Warcraft process id | `-1` | open up task manager to find PID |
-| `-r`<br>`-reader` | Addon data screen reader backend | `DXGI` | `DXGI` or `WGC`. See [Screen Capture Methods](#32-screen-capture-methods) |
-| `hostv1` | Navigation Remote V1 host | `localhost` | - |
-| `portv1` | Navigation Remote V1 port | `5001` | - |
-| `hostv3` | Navigation Remote V3 host | `127.0.0.1` | - |
-| `portv3` | Navigation Remote V3 port | `47111` | - |
-| `-n`<br>`-viz` | While Remote V1 is available, show Path Visualization<br>Can display Remote V3 Paths as well. | `false` | - |
-| `-d`<br>`-diag` | Diagnostics, when set, takes screen captures under `Json\cap\*.jpg` | - | - |
-| `-o`<br>`-overlay` | Show NpcNameFinder Overlay | `false` | - |
-| `-t`<br>`-otargeting` | While overlay enabled, show Targeting points | `false` | - |
-| `-s`<br>`-oskinning` | While overlay enabled, show Skinning points | `false` | - |
-| `-v`<br>`-otargetvsadd` | While overlay enabled, show Target vs Add points | `false` | - |
-| `-g`<br>`--gpu` | Use GPU compute shader for NPC name finding | `true` | `true` or `false` |
+| `-m`<br>`--mode` | Pathfinder type | `Local` | `Local` or `RemoteV1` or `RemoteV3` |
+| `-p`<br>`--pid` | World of Warcraft process id | `-1` | open up task manager to find PID |
+| `-r`<br>`--reader` | Addon data screen reader backend | `DXGI` | `DXGI` or `WGC`. See [Screen Capture Methods](#screen-capture-methods) |
+| `--hostv1` | Navigation Remote V1 host | `localhost` | - |
+| `--portv1` | Navigation Remote V1 port | `5001` | - |
+| `--hostv3` | Navigation Remote V3 host | `127.0.0.1` | - |
+| `--portv3` | Navigation Remote V3 port | `47111` | - |
+| `-n`<br>`--viz` | While Remote V1 is available, show Path Visualization<br>Can display Remote V3 Paths as well. | `false` | - |
+| `-d`<br>`--diag` | Diagnostics, when set, takes screen captures under `Json\cap\*.jpg` | `false` | - |
+| `-o`<br>`--overlay` | Show NpcNameFinder Overlay | `false` | - |
+| `-t`<br>`--otargeting` | While overlay enabled, show Targeting points | `false` | - |
+| `-s`<br>`--oskinning` | While overlay enabled, show Skinning points | `false` | - |
+| `-v`<br>`--otargetvsadd` | While overlay enabled, show Target vs Add points | `false` | - |
+| `-g`<br>`--gpu` | Use GPU compute shader for NPC name finding | `false` | `true` or `false` |
 | `--loadonly` | Loads the given class profile then exits | `false` | - |
+
+> Both hosts default to `Local` — the in-process navmesh, nothing external to start.
+> Pass `--mode RemoteV1` / `--mode RemoteV3` only if you actually run one of those
+> services.
 
 e.g. run from Powershell without any optional parameter
 ```ps
@@ -448,13 +670,13 @@ cd C:\WowClassicGrindBot\HeadlessServer
 .\run.bat Hunter_1.json -m Local --loadonly
 ```
 
-## 8. Configure the Wow Client - Interface Options
+## WoW Client - Interface Options
 
 Need to make sure that certain interface options are set.
 
 The most important are `Click-to-Move` and `Do Not Flash Screen at Low Health`.
 
-### 8.1 Auto-Configured Settings
+### Auto-Configured Settings
 
 The addon automatically configures the following CVars when it loads. You do not need to set these manually:
 
@@ -474,7 +696,7 @@ The addon automatically configures the following CVars when it loads. You do not
 | Display | Brightness | 50 | Calibrated for pixel reading |
 | Display | Gamma | 1.0 | Calibrated for pixel reading |
 
-### 8.2 Manual Settings
+### Manual Settings
 
 The following settings must still be configured manually from the main menu (ESC) -> Interface Options:
 
@@ -488,11 +710,11 @@ The following settings must still be configured manually from the main menu (ESC
 | Accessibility - Cursor Size | **32x32** | Larger cursor is easier for the bot to detect and classify |
 | Accessibility - Minimum Character Name Size | **6** | Ensures NPC names are large enough to be detected reliably |
 
-## 9. Configure the Wow Client - Key Bindings
+## WoW Client - Key Bindings
 
 **Important Change**: The addon now automatically reads your in-game keybindings. You no longer need to manually configure most keybindings in the class profile - the addon will detect and use whatever keys you have bound in WoW.
 
-### 9.1 Automatic Keybinding Detection
+### Automatic Keybinding Detection
 
 When the addon loads, it reads your current keybindings from the game and sends them to the application. This means:
 
@@ -500,7 +722,7 @@ When the addon loads, it reads your current keybindings from the game and sends 
 - Modifier keys (Shift, Ctrl, Alt) are fully supported
 - The application will use whatever keys you have bound for each action
 
-### 9.2 Auto-Setup of Essential Bindings
+### Auto-Setup of Essential Bindings
 
 On first run (or if essential bindings are missing), the addon will automatically set up:
 
@@ -528,9 +750,9 @@ On first run (or if essential bindings are missing), the addon will automaticall
 
 **Note**: The command prefix (e.g., `dc`) is derived from your addon title configured during setup. If your addon is named "daq", commands would be `/daq`, `/daqflush`, etc.
 
-### 9.3 Movement Keys
+### Movement Keys
 
-Movement keys are still configured in the [Class Configuration](#12-class-configuration) file since they may vary per profile:
+Movement keys are still configured in the [Class Configuration](#class-configuration) file since they may vary per profile:
 
 | In-Game | ClassConfiguration Name | Default |
 | ---- | ---- | ---- |
@@ -538,6 +760,7 @@ Movement keys are still configured in the [Class Configuration](#12-class-config
 | Move Backward | BackwardKey | `DownArrow` |
 | Turn Left | TurnLeftKey | `LeftArrow` |
 | Turn Right | TurnRightKey | `RightArrow` |
+| Toggle Run/Walk | WalkKey | *unset* |
 
 To use `WASD` movement, add to your class profile (or see `Json\class\Warrior_1_MovementKeys.json`):
 ```json
@@ -547,7 +770,26 @@ To use `WASD` movement, add to your class profile (or see `Json\class\Warrior_1_
 "TurnRightKey": 68, // D
 ```
 
-### 9.4 Manual Binding Setup (Optional)
+#### Toggle Run/Walk (`WalkKey`)
+
+Optional, and **off by default**. When set, the WASD spline follower drops to walk speed
+on the approach to a hairpin instead of arriving at full run, braking and pivoting —
+which is what makes tight switchbacks (tower spirals, the Goldshire hairpin) look and
+behave sanely.
+
+Two things are required, and it silently does nothing if either is missing:
+
+1. Bind the key **in game** under `Key Bindings → Movement → Toggle Run/Walk`.
+2. Set the same key in your class profile:
+   ```json
+   "WalkKey": 145   // Scroll Lock, for example
+   ```
+
+Leaving it unset is supported — the follower just brakes and pivots instead. If you see
+run-speed hairpin approaches, this is the setting that is missing; the log warns once
+when the follower asks for walk speed and there is no key to honour it.
+
+### Manual Binding Setup (Optional)
 
 If you prefer to set up bindings manually or the auto-setup didn't work, you can use these slash commands:
 
@@ -560,7 +802,7 @@ If you prefer to set up bindings manually or the auto-setup didn't work, you can
 
 These commands save bindings to your current binding set (account-wide or character-specific).
 
-## 10.1. Actionbar Key Bindings:
+## Actionbar Key Bindings
 
 The addon reads your actual action bar keybindings from the game. You can use any keys you prefer, including modifier combinations.
 
@@ -607,7 +849,7 @@ On non-US keyboard layouts, the physical key that produces `-` or `=` may have a
    <img alt="Screenshot" src="./images/keybindings.png" width="75%">
 </a>
 
-## 11. Custom Actions (Uses BindPad)
+## Custom Actions (BindPad)
 
 The BindPad addon is bundled in `Addons/BindPad/` and is required for TBC Classic 2.5.5+ compatibility. Blizzard patched `SecureActionButtonTemplate` macrotext in recent clients, breaking dynamically created secure buttons. BindPad's button works due to its initialization approach.
 
@@ -647,13 +889,13 @@ The custom actions use Alt-modified keys (`Alt-Delete`, `Alt-Insert`, etc.) beca
 - They are unlikely to conflict with your existing keybindings
 - They avoid accidentally triggering actions when typing in chat
 
-## 12. Class Configuration
+# Class Configuration
 
-If one of the Property is not explicitly mentioned during the configuration or in the examples, you can assume it uses the default value!
+If one of the Properties is not explicitly mentioned during the configuration or in the examples, you can assume it uses the default value!
 
 Each class has a configuration file in [/Json/class/](./Json/class) e.g. the config for a `Warrior` it is in file [Warrior_1.json](./Json/class/Warrior_1.json).
 
-The configuration file determines what spells the character casts, when pulling and in combat, where to vendor and repair and what buffs consider.
+The configuration file determines what spells the character casts, when pulling and in combat, where to vendor and repair and what buffs to consider.
 
 Take a look at the class files in [/Json/class/](./Json/class) for examples of what you can do.
 
@@ -676,7 +918,7 @@ The class configuration controls all aspects of bot behavior. Here's why each se
 
 | Property Name | Description | Optional | Default value |
 | --- | --- | --- | --- |
-| `"Log"` | Should logging enabled for `KeyAction(s)`. Requires restart. | true | `true` |
+| `"Log"` | Should logging enabled for [`KeyAction(s)`](#keyaction). Requires restart. | true | `true` |
 | `"LogBagChanges"` | Should bag changes logs enabled for. | true | `true` |
 | `"Loot"` | Should loot the mob | true | `true` |
 | `"Skin"` | Should skin the mob | true | `false` |
@@ -696,15 +938,16 @@ The class configuration controls all aspects of bot behavior. Here's why each se
 | `"SideActivityRequirements"` | List of [Requirements](#requirement) to limit when the player should search for target<br/>Great for enforcing how closely should follow the path. | true | `true` |
 | --- | --- | --- | --- |
 | `"Paths"` | Array of [PathSettings](#pathsettings).<br>Either define this array or use the above properties | true | `[]` |
+| `"Seed"` | Pins the randomness of [generated routes](#generated-routes) so a session replays identically.<br>Unset draws a fresh seed per session and logs it. | true | `null` |
 | `"Mode"` | What kind of [behaviour](#modes) should the bot operate | true | `Mode.Grind` |
 | `"NPCMaxLevels_Above"` | Maximum allowed level above difference to the player | true | `1` |
 | `"NPCMaxLevels_Below"` | Maximum allowed level below difference to the player | true | `7` |
 | `"CheckTargetGivesExp"` | Only engage the target if it yields experience | true | `false` |
 | `"Blacklist"` | List of names or sub names which must be avoid engaging | true | `[""]` |
-| `"TargetMask"` | [UnitClassification](https://wowpedia.fandom.com/wiki/API_UnitClassification) types that allowed to engage with. | true | `"Normal, Trivial, Rare"` |
+| `"TargetMask"` | [`TargetMask`](#targetmask) — [UnitClassification](https://wowpedia.fandom.com/wiki/API_UnitClassification) types that allowed to engage with. | true | `"Normal, Trivial, Rare"` |
 | `"NpcSchoolImmunity"` | List of NpcIDs which have one or more [SchoolMask](#npcschoolimmunity) immunities | true | `""` |
-| `"IntVariables"` | List of user defined `integer` variables | true | `[]` |
-| `"StringVariables"` | List of user defined `string` variables | true | `[]` |
+| `"IntVariables"` | List of user defined `integer` or `integer[]` variables. See [`IntVariables`](#intvariables) | true | `[]` |
+| `"StringVariables"` | List of user defined `string` variables. See [`StringVariables`](#stringvariables) | true | `[]` |
 | --- | --- | --- | --- |
 | `"Pull"` | [KeyActions](#keyactions) to execute upon [Pull Goal](#pull-goal) | true | `{}` |
 | `"Flee"` | [KeyActions](#keyactions) to execute upon [Flee Goal](#flee-goal). | true | `{}` |
@@ -757,7 +1000,7 @@ The following [KeyActions](#keyactions) are `BaseActions`: `Jump`, `Interact`, `
 
 Which are shared and unified among [Pull Goal](#pull-goal) and [Combat Goal](#combat-goal).
 
-e.g override default [KeyActions](#keyactions) properties in the [Class Configuration](#12-class-configuration) file
+e.g override default [KeyActions](#keyactions) properties in the [Class Configuration](#class-configuration) file
 ```json
 "Mount": {
     "Key": "N0"
@@ -788,7 +1031,7 @@ e.g.
 "TargetMask": "Normal, Trivial, Rare, Elite, RareElite",    // multiple combined
 ```
 
-Where `Elite` and `RareElite` has been included compare to default.
+Where `Elite` and `RareElite` have been included compared to default.
 
 ### NpcSchoolImmunity
 
@@ -822,14 +1065,16 @@ By Default, the bot attempts to use the mouse for the following reasons:
 * `Follow Route Goal` Targeting non blacklisted npcs
 * `Loot Goal` and `Skinning Goal` while acquiring target
 
-You can disable this behavior by setting `KeyboardOnly` to `true` in the [Class Configuration](#12-class-configuration). Which has the following effects:
+You can disable this behavior by setting [`KeyboardOnly`](#keyboardonly) to `true` in the [Class Configuration](#class-configuration). Which has the following effects:
 * `Loot` limited, only capable of looting by selecting last target. So after each killed mob only the **last npc** can be looted.
 * GatherCorpse(`Skin`, `Herb`, `Mine`, `Salvage`) unavailable.
 * Target selection limited to only `TargetNearestTargetKey`, which significantly reduce how quickly can find the next target.
 
 ### IntVariables
 
-Gives the ability to the user to define global integer variables along the whole [Class Configuration](#12-class-configuration) scope. 
+Gives the ability to the user to define global integer variables along the whole [Class Configuration](#class-configuration) scope.
+
+Each value can be either a single integer or an **array of integers**. Array values are useful for aura prefixes (`Buff_`, `Debuff_`, `TDebuff_`, `TBuff_`, `FBuff_`) where you want to check if **any** of several icon IDs is active. The variable evaluates to the **maximum remaining time** across all IDs in the array, so `Debuff_POISON > 1` is true when any of the listed poisons is active.
 
 For example look at the Warlock profiles.
 ```json
@@ -837,10 +1082,10 @@ For example look at the Warlock profiles.
     "DOT_MIN_HEALTH%": 35,
     "TDebuff_Frost Fever": 237522,   // iconId https://www.wowhead.com/icons
     "TDebuff_Blood Plague": 237514,  // iconId https://www.wowhead.com/icons
-    "FBuff_Rejunevation": 12345,
+    "FBuff_Rejuvenation": 12345,
     "Buff_Slice and Dice": 99999,
-    "Debuff_Poision": 135368,
-    "TBuff_Dispell on Target": 16846,
+    "Debuff_Poison": 135368,
+    "TBuff_Dispel on Target": 16846,
     "Item_Soul_Shard": 6265,
     // ...
     // ...
@@ -850,11 +1095,23 @@ For example look at the Warlock profiles.
 }
 ```
 
+**Array syntax** — group multiple icon IDs under a single variable:
+```json
+"IntVariables": {
+    "Debuff_POISON": [136006, 136007, 136016, 136064, 136067, 136077, 136093, 134437, 132273, 132274, 132105],
+    "Debuff_DISEASE": [136127, 136134, 134324, 135914]
+}
+```
+Then use a single requirement instead of chaining many `||` conditions:
+```json
+"Requirements": ["Debuff_POISON > 1 || Debuff_DISEASE > 1"]
+```
+
 ### StringVariables
 
 Similar as [IntVariables](#intvariables) just for string values
 
-Note: if the `value` matches any of the `IntVariables` key, the `value` will be replaced with the IntVariable value.
+Note: if the `value` matches any of the [`IntVariables`](#intvariables) key, the `value` will be replaced with the IntVariable value.
 
 When the variable name starts with `$ITEM_NAME` the value will be replaced with the Item English localized, in this example `Rough Arrow`.
 
@@ -875,7 +1132,8 @@ The path that the player follows during [Follow Route Goal](#follow-route-goal),
 
 | Property Name | Description | Optional | Default value |
 | --- | --- | --- | --- |
-| `"PathFilename"` | [Path](#path) to use while alive | **false** | `""` |
+| `"PathFilename"` | [Path](#path) to use while alive | **false**, unless `"Generate"` is set | `""` |
+| `"Generate"` | [Generate the route](#generated-routes) from spawn data instead of a file | true | `null` |
 | `"Id"` | <b>Must be a Unique Integer value</b> to identify PathSettings. | true | `"Auto incremented from zero"` or `"Unless specified by user."` |
 | `"PathThereAndBack"` | While using the path, [should go start to and reverse](#there-and-back) | true | `true` |
 | `"PathReduceSteps"` | Reduce the number of path points | true | `false` |
@@ -883,7 +1141,7 @@ The path that the player follows during [Follow Route Goal](#follow-route-goal),
 
 ### Simple approach
 
-When the bellow properties are defined in the [Class Configuration](#12-class-configuration), a new [PathSettings](#pathsettings) instance is created under in `Paths` array as the first element.
+When the below properties are defined in the [Class Configuration](#class-configuration), a new [PathSettings](#pathsettings) instance is created under in `Paths` array as the first element.
 
 ```json
 "Id": 42,                                                               // Optional - Helps identify the path
@@ -903,7 +1161,7 @@ With the latest update it is possible to change between multiple paths during ru
 
 In that case properties what mentioned in [Simple approach](#simple-approach) are ignored.
 
-Instead using another structure called [Class Configuration.Paths](#12-class-configuration) array, which is very similar, however theres are addition [Requirements](#requirement) field. Backed by [PathSettings](#pathsettings) object.
+Instead using another structure called [Class Configuration.Paths](#class-configuration) array, which is very similar, however there is an additional [Requirements](#requirement) field. Backed by [PathSettings](#pathsettings) object.
 
 Let's look at the following example
 - It is really important to always have one `Path` which doesn't have any condition, serves as fallback.
@@ -939,9 +1197,153 @@ Let's look at the following example
 
 The previously mentioned example can be found under [Hunter_1.json](./Json/class/Hunter_1.json).
 
+### Generated Routes
+
+Instead of pointing at a recorded file, a path can describe **what to grind** and let the bot
+build the route from the running client's own NPC spawn data and the baked navmesh.
+
+This exists because a recorded route is tied to one race, one level band and one client - and
+the Cataclysm/Mists zone revamps moved the world, so routes recorded on Classic/TBC/Wrath do
+not survive there. The spawn data is already partitioned per client, so the same profile entry
+produces a valid route on every one.
+
+```json
+"Paths": [
+{
+    "Generate": {
+        "Subzone": "Northshire Valley",
+        "Mobs": "Name:Wolf || Name:Kobold",
+        "Mode": "Wander"
+    },
+    "Requirements": [ "Level < 5", "Race:Human" ]
+},
+{
+    "Generate": {
+        "Zone": "Elwynn Forest",
+        "Mobs": "Type:Humanoid && Level <= PlayerLevel + 2 && !Elite"
+    },
+    "Requirements": [ "Level < 10" ]
+}
+],
+```
+
+| Property Name | Description | Optional | Default value |
+| --- | --- | --- | --- |
+| `"Zone"` | Zone name, e.g. `"Elwynn Forest"` | true | player's current zone |
+| `"Subzone"` | Subzone name, e.g. `"Northshire Valley"`. Narrower than `Zone`; wins when both are set | true | `null` |
+| `"UIMapId"` | Explicit map id; wins over both names | true | `0` |
+| `"Name"` | Label shown as the goal name and in logs | true | derived from `Subzone`/`Zone` |
+| `"Mobs"` | Which mobs shape the route - see [Mob filter](#mob-filter-creature-scope) | true | mobs within `PlayerLevel - 3 .. + 2`, non-elite |
+| `"Mode"` | `"Wander"` regenerates a fresh set of spots every lap. `"Loop"` builds one fixed closed tour, ordered shortest-first | true | `"Wander"` |
+| `"Focus"` | `"Density"` sticks to where mobs pack together and drops isolated spawns. `"Balanced"` drops only the sparsest. `"Coverage"` takes in everything that matched | true | `"Density"` |
+| `"MinClusterShare"` | Override: a spawn cluster is kept only if it holds this share of what the biggest cluster holds | true | from `Focus` |
+| `"DensityBias"` | Override: how hard **Wander** spots are drawn to dense areas. `0` uniform, `1` proportional, `2` packs dominate. Not used by `Loop` | true | from `Focus` |
+| `"MinCellShare"` | Override: share of the busiest spot's mob count a place must hold to become a **Loop** stop. This is what `Focus` uses to skip thin outlying spots | true | from `Focus` |
+| `"WaypointSpacingYards"` | Spacing of the emitted waypoints. Recorded routes sit near 17; much denser makes the follower brake constantly | true | `15` |
+| `"Stops"` | How many hunting spots to pick. The route is then filled in by pathing between them, so the waypoint count is much higher than this | true | `8` |
+| `"PaddingYards"` | How far the roaming area is grown beyond the spawn footprint | true | `25` |
+| `"MaxVerticalDelta"` | Rejects a spot this far above the mob that anchored it - keeps routes off rooftops and ledges | true | `5` |
+| `"MinSpacingYards"` | Minimum gap between two spots | true | `30` |
+
+The generated route is **dense**: after picking the spots, each consecutive pair is pathed
+through the navmesh and those points become the waypoints. Target acquisition happens while
+walking, so a long straight hop between two spots would skip every mob beside it.
+
+#### Wander vs Loop
+
+`"Wander"` picks its spots at random - weighted toward dense areas - and picks a **fresh set
+every lap**, so the bot never retraces the same line. Good for staying unpredictable.
+
+`"Loop"` takes the densest spots in the area, measures the real walking distance between every
+pair, and orders them into the shortest closed tour. The result is the same route every
+session for a given zone and mob filter, and a lap covers the area once instead of
+criss-crossing it. It is the drop-in replacement for a recorded route.
+
+Set `"PathThereAndBack": false` with `"Loop"` - the tour already returns to its start, so
+walking it backwards afterwards just repeats it in reverse.
+| `"Seed"` | Pins this path's randomness. Overrides the profile-level `"Seed"`. `Loop` ignores it - that mode is deterministic already | true | `null` |
+
+`"Seed"` at the [Class Configuration](#class-configuration) level pins every generated route in
+the session. Left unset, a fresh seed is drawn per session **and written to the log**, so a run
+can still be reproduced afterwards.
+
+Generation needs a **baked navmesh** for the continent. Without one it fails, logs the reason,
+and that path simply drops out of planning so the next one in the profile takes over - so keep
+a fallback path with no requirements, exactly as with recorded routes.
+
+Preview and tune these in the browser under **Route Gen**, which draws the result on the
+Leaflet map and can save it to `Json/path` as an ordinary recorded route.
+
+#### Mob filter (creature scope)
+
+`"Mobs"` uses the same expression language as [Requirement](#requirement) - `&&`, `||`, `!`,
+parentheses, arithmetic and comparisons all work.
+
+> **The subject is a creature, not the player.** `Level` here is the *mob's* level; the
+> player's is `PlayerLevel`. So `"Level <= PlayerLevel + 2"` reads exactly as you'd say it.
+> Player-only names such as `Health%` or `Race:` are not available here and will fail to
+> parse, which is intentional - a filter must not silently test the wrong thing.
+
+| Name | Meaning |
+| --- | --- |
+| `Level` | Average of the mob's min/max level |
+| `MinLevel` / `MaxLevel` | The mob's level range |
+| `Rank` | 0 normal, higher for elite/rare |
+| `NpcId` | Creature entry id |
+| `SpawnCount` | How many of this mob spawn inside the target zone |
+| `PlayerLevel` | The player's level |
+| `Elite` | `Rank > 0` |
+| `Skinnable` | The mob can be skinned |
+| `Hostile` | Attackable by the player's faction |
+| `Type:[type]` | Creature type - same values as [Target requirements](#target-requirements), e.g. `Type:Humanoid` |
+| `Name:[text]` | Mob name contains `text`, case-insensitive. `Name:Wolf` covers Young Wolf, Rabid Wolf, ... |
+| `Faction:[id]` | Faction template id |
+| `Family:[id]` | Creature family id |
+
+e.g.
+```json
+"Mobs": "Type:Humanoid && !Elite"                              // any non-elite humanoid
+"Mobs": "(Name:Wolf || Name:Kobold) && Level >= PlayerLevel - 3"
+"Mobs": "Faction:7 && !Name:Defias"                            // a faction, minus one family of mobs
+"Mobs": "NpcId == 299 || NpcId == 6"                           // exactly these two
+"Mobs": "SpawnCount > 8 && Skinnable"                          // dense skinning spots only
+```
+
+Regardless of the expression, service NPCs, critters, totems, pets and anything not hostile to
+your faction are never picked.
+
+#### Time-based Path Cycling
+
+You can cycle between grinding spots on a timer using `SessionMinutes % N` in path requirements. `SessionMinutes` tracks how long the current session has been running, and the modulo `%` operator divides time into repeating intervals.
+
+**Example: Alternate between two paths every 20 minutes (40-minute cycle)**
+
+```json
+"PathFilename": [
+{
+    "PathFilename": "spot_A.json",
+    "Requirements": [
+        "SessionMinutes % 40 < 20"
+    ]
+},
+{
+    "PathFilename": "spot_B.json",
+    "Requirements": [
+        "SessionMinutes % 40 >= 20"
+    ]
+}
+],
+```
+
+For 3+ paths, divide the cycle into ranges. For example, a 60-minute cycle with three 20-minute segments:
+
+- Path A: `"SessionMinutes % 60 < 20"`
+- Path B: `"SessionMinutes % 60 >= 20 && SessionMinutes % 60 < 40"`
+- Path C: `"SessionMinutes % 60 >= 40"`
+
 ### KeyActions
 
-Its a container type for `Sequence` of [KeyAction](#keyaction).
+It's a container type for `Sequence` of [KeyAction](#keyaction).
 
 ### KeyAction
 
@@ -956,15 +1358,16 @@ Can specify conditions with [Requirement(s)](#requirement) in order to create a 
 | `"Modifier"` | Modifier key to hold while pressing the key. Values: `"None"`, `"Shift"`, `"Ctrl"`, `"Alt"`. Alternative to using prefix in `Key`. **Note**: Combined modifiers (e.g., `Shift-Alt`) are not supported - only single modifiers. | `"None"` |
 | `"Cost"` | [Adhoc Goals](#adhoc-goals) or [NPC Goal](#npc-goals) only, priority | `18` |
 | `"PathFilename"` | [NPC Goal](#npc-goals) only, this is a short path to get close to the NPC to avoid walls etc. | `""` |
-| `"HasCastBar"` | After key press cast bar is expected?<br>By default sets `BeforeCastStop`=`true` | `false` |
+| `"HasCastBar"` | **Auto-detected** from the spell's effective cast time (`GetSpellInfo`), so it reflects talents like 5/5 Improved Corruption that flip a cast to instant. JSON setting is accepted but ignored. | _derived_ |
 | `"InCombat"` | Should combat matter when attempt to cast?<br>Accepted values:<br>* `"any value for doesn't matter"`<br>* `"true"`<br>* `"false"` | `false` |
 | `"Item"` | Like on use Trinket, `Food`, `Drink`.<br>The following spells counts as Item, `Throw`, `Auto Shot`, `Shoot` | `false` |
 | `"PressDuration"` | How many minimum milliseconds to hold the key press down | `50` |
-| `"Form"` | Shapeshift/Stance form to be in to cast this spell<br>If setted, affects `WhenUsable` | `Form.None` |
+| `"Form"` | Shapeshift/Stance form to be in to cast this spell<br>If set, affects `WhenUsable` | `Form.None` |
 | `"Cooldown"` | **Note this is not the in-game cooldown!**<br>The time in milliseconds before KeyAction can be used again.<br>This property will be updated when the backend registers the `Key` press. It has no feedback from the game. | `400` |
 | `"Charge"` | How many consequent key press should happen before setting Cooldown | `1` |
 | `"School"` | Indicate what type of [SchoolMask](#npcschoolimmunity) element the spell will do.  | `None` |
 | `"MacroText"` | You can specify a macro text or macro template which can hold variables. make sure the MacroText is no longer then 255 characters. | `""` |
+| `"BaseAction"` | Bypasses CastingHandler guard rails (GCD waiting, spell queue checks, cast verification). Use for actions that execute instantly without cast bars or cooldowns. See the `BaseActionKeys` table under [Understanding Class Configuration](#understanding-class-configuration). | `false` |
 | --- | --- | --- |
 | `"WhenUsable"` | Mapped to [IsUsableAction](https://wowwiki-archive.fandom.com/wiki/API_IsUsableAction) | `false` |
 | `"UseWhenTargetIsCasting"` | Checks for the target casting/channeling.<br>Accepted values:<br>* `null` -> ignore<br>* `false` -> when enemy not casting<br>* `true` -> when enemy casting | `null` |
@@ -976,6 +1379,7 @@ Can specify conditions with [Requirement(s)](#requirement) in order to create a 
 | `"ResetOnNewTarget"` | Reset the Cooldown if the target changes | `false` |
 | `"Log"` | Related events should appear in the logs | `true` |
 | `"UseMount"` | Should use mount ? <br/>Limited to [AdhocNpcGoals](#npc-goals) such as `Repair`, `Sell`, `Vendor` routes. | `false` |
+| `"TrainAll"` | Buy every spell the trainer offers and can be afforded, instead of only the ones whitelisted via `SPELL_` variables. <br/>Limited to [`ClassTrainer`](#class-trainer) NPC entries. **Do not pair with the `HasTrainableSpell` requirement** - see [Class Trainer](#class-trainer). | `false` |
 | --- | Before keypress cast, ... | --- |
 | `"BeforeCastFaceTarget"` | Attempt to look directly at target.<br>**Note**: it may not work for every scenario. | `false` |
 | `"BeforeCastDelay"` | Delay in milliseconds. | `0` |
@@ -1000,7 +1404,7 @@ Some of these properties are optional and not required to be specified.
 
 However you can create complex conditions and branches to suit the situation.
 
-Important, the `AfterCast` prefixed conditions order as is its shows up the the table above.
+Important, the `AfterCast` prefixed conditions are ordered as shown in the table above.
 
 #### Understanding KeyAction Properties
 
@@ -1008,25 +1412,25 @@ Important, the `AfterCast` prefixed conditions order as is its shows up the the 
 
 | Property Group | Purpose |
 | --- | --- |
-| `HasCastBar` | Tells the bot to wait for the cast to complete before taking the next action. Without this, the bot might interrupt your cast by pressing another key. |
+| `HasCastBar` | _Auto-detected_ from the spell's effective cast time via `GetSpellInfo` — the bot waits for the cast bar without you needing to declare it in JSON. Talent-aware: a spell that becomes instant via talents (e.g., 5/5 Improved Corruption) is automatically routed through the instant path. The JSON field is accepted for back-compat but ignored. |
 | `WhenUsable` | Only attempts to cast when the game reports the ability is usable (enough mana/rage/energy, not on cooldown). Prevents wasting key presses. |
 | `Cooldown` | Prevents the bot from spamming the same ability. This is the bot's internal cooldown, not the game's. Set to match GCD (~400ms) for most abilities. |
 | `Form` | For Druids/Warriors - ensures you're in the correct shapeshift/stance before casting. Prevents "Can only use in Cat Form" errors. |
-| `School` | Used with `NpcSchoolImmunity` to skip spells against immune targets (e.g., don't cast Fire spells on fire-immune mobs). |
+| `School` | Used with [`NpcSchoolImmunity`](#npcschoolimmunity) to skip spells against immune targets (e.g., don't cast Fire spells on fire-immune mobs). |
+| `BaseAction` | Marks the action as a basic system action (jump, interact, target, move) that should execute immediately. Bypasses GCD waiting, spell queue checks, and cast verification — the bot won't wait to confirm success. Use for non-spell key presses that are expected to work 99.99% of the time. |
 | `BeforeCastStop` | Stops movement before casting. Essential for spells with cast bars that can't be cast while moving. |
 | `BeforeCastFaceTarget` | Turns to face the target. Useful for casters who might be kiting and need to turn around to cast. |
 | `AfterCastWaitSwing` | For abilities that reset swing timer (e.g., Heroic Strike). Waits for the swing to land before continuing. |
 | `AfterCastWaitBuff` | Waits until a buff/debuff appears. Useful for DoTs - ensures the DoT landed before moving to next ability. |
 | `AfterCastStepBack` | Creates distance after casting. Useful for kiting - cast, step back, repeat. |
-| `Requirement(s)` | Conditions that must be true to use this ability. Core of the combat rotation logic. |
-| `Interrupt(s)` | Conditions that will interrupt a channeled spell or cancel casting. Useful for react to incoming damage. |
+| [`Requirement(s)`](#requirement) | Conditions that must be true to use this ability. Core of the combat rotation logic. |
+| [`Interrupt(s)`](#interrupt-requirement) | Conditions that will interrupt a channeled spell or cancel casting. Useful for react to incoming damage. |
 
-e.g. - bare minimum for a spell which has castbar.
+e.g. - bare minimum for a spell which has castbar. `HasCastBar` is auto-detected from the spell's cast time, so you no longer need to set it explicitly. The JSON field is accepted for back-compat:
 ```json
 {
     "Name": "Frostbolt",
     "Key": "1",
-    "HasCastBar": true,   //<-- Must be indicated the spell has a castbar
 }
 ```
 
@@ -1066,7 +1470,7 @@ e.g. for Rogue ability
 }
 ```
 
-Theres are few specially named [KeyAction](#keyaction) such as `Food` and `Drink` which is reserved for eating and drinking.
+There are a few specially named [KeyAction](#keyaction) such as `Food` and `Drink` which is reserved for eating and drinking.
 
 They already have some pre baked [Requirement(s)](#requirement) conditions in order to avoid mistype the definition. 
 
@@ -1084,7 +1488,7 @@ The bare minimum for `Food` and `Drink` is looks something like this.
 }
 ```
 
-When any of these [KeyAction(s)](#keyaction) detected, by default, it going to be awaited with a predefined [Wait Goal](#wait-goals) logic.
+When any of these [KeyAction(s)](#keyaction) are detected, by default, it going to be awaited with a predefined [Wait Goal](#wait-goals) logic.
 
 Should see something like this, you can override any of the following values.
 
@@ -1110,7 +1514,7 @@ Should see something like this, you can override any of the following values.
 
 ### Casting Handler
 
-**CastingHandler** is a component which responsible for handling player spell casting, 
+**CastingHandler** is a component responsible for handling player spell casting, 
 let it be using an item from the inventory, casting an instant spell or casting a spell which has castbar.
 
 From Addon version **1.6.0** it has been significantly changed to the point where it no longer blocks the execution until the castbar fully finishes, but rather gives back the control to the parent Goal such as [Adhoc Goals](#adhoc-goals) or [Pull Goal](#pull-goal) or [Combat Goal](#combat-goal) to give more time to find the best suitable action for the given moment.
@@ -1379,9 +1783,9 @@ While the goal is active
 When the goal exits
 * Clears the current target.
 
-The path will be simplifed to ensure straight line of movement.
+The path will be simplified to ensure straight line of movement.
 
-To opt-in the goal execution you have to define the following the [Class Configuration](#12-class-configuration)
+To opt-in the goal execution you have to define the following the [Class Configuration](#class-configuration)
 
 ```json
 "Flee": {
@@ -1421,7 +1825,7 @@ Example for a mage
 },
 ```
 
-Example for accidently pulling en elite mob
+Example for accidentally pulling an elite mob
 ```json
 "Flee": {
   "Sequence": [
@@ -1465,6 +1869,28 @@ e.g.
 }
 ```
 
+#### Backing out of melee
+
+No dedicated action is needed for this - a plain `KeyAction` bound to the backpedal key does it. `PressDuration` holds the key, `Interrupt` is a *keep-going* condition rather than a stop one, so the press is cut short as soon as it stops holding. `BaseAction` keeps it out of the spell/cast-time machinery, and `BeforeCastFaceTarget` aims first, since backpedalling is relative to facing.
+
+```json
+{
+    "Name": "Stepback",
+    "Key": "S",
+    "PressDuration": 3000,
+    "BaseAction": true,
+    "BeforeCastFaceTarget": true,
+    "Requirements": [
+        "Has Pet",
+        "TargetsPet",
+        "InMeleeRange"
+    ],
+    "Interrupt": "InMeleeRange && TargetAlive"
+}
+```
+
+That one only fires while the pet holds the mob - backing away from something chasing you just drags it along. A mage kiting off a root uses the same shape with `"Frostbite"` and `"TargetsMe"` instead.
+
 ### Adhoc Goals
 
 **Why Adhoc Goals?** These handle "between fight" activities - things you do when you're not actively killing something. Buffs that expired, health/mana that needs restoring, pet summoning, etc. The bot checks these when out of combat and performs them if conditions are met.
@@ -1500,7 +1926,7 @@ e.g.
 
 **Note**: that the default combat requirement can be overridden.
 
-e.g high level [Death Knight](./Json/class/DeathKnight_70_Unholy.json) 
+e.g. high level [Death Knight](./Json/class/DeathKnight_70_Unholy.json) 
 ```json
 {
     "Cost": 3.1,
@@ -1515,7 +1941,7 @@ e.g high level [Death Knight](./Json/class/DeathKnight_70_Unholy.json)
 },
 ```
 
-e.g high level [Warlock](./Json/class/Warlock_66_Demo_pet_pull.json)
+e.g. high level [Warlock](./Json/class/Warlock_66_Demo_pet_pull.json)
 ```json
 {
     "Name": "Life Tap",
@@ -1663,7 +2089,7 @@ This is rather an **experimental** feature, and it is known to be unstable but i
 
 With `CrossZoneSearch` enabled, the **current zone** restriction can be bypassed.
 
-The key limitation is the navigation, it is known to get stuck with [Indoors](https://wowwiki-archive.fandom.com/wiki/API_IsIndoors) npcs be are of that!
+The key limitation is the navigation, it is known to get stuck with [Indoors](https://wowwiki-archive.fandom.com/wiki/API_IsIndoors) NPCs — beware of that!
 
 The `"KeyAction.Name"` has a special formula which can be followed to have different behaviour!
 
@@ -1713,6 +2139,145 @@ examples of full automatic npc detection or multiple whitelisted names:
     ]
 }
 ```
+
+**Note:** `Durability%` is the average across all 18 equipped slots, so it is dominated by
+armour and lags well behind a weapon that is about to break. Use
+[`WeaponDurability%`](#value-base-requirements) - the lowest of main hand, off hand and
+ranged - when the repair trip is really about the weapon:
+`"Requirement": "Durability% < 35 || WeaponDurability% < 30"`.
+
+#### Class Trainer
+
+A `ClassTrainer` entry walks to the trainer and **learns spells**, instead of opening a
+merchant window.
+
+There is no new syntax for saying which spells to learn. Every `IntVariables` key whose
+name starts with `SPELL_` is the whitelist, and its array is that spell's **ranks in
+ascending order** - the same arrays a profile already writes for `Spell:` requirements:
+
+```json
+"IntVariables": {
+    "SPELL_CHARGE": [100, 6178, 11578],       // Charge rank 1, 2, 3
+    "SPELL_REND":   [772, 6546, 6547],        // Rend rank 1, 2, 3
+    "SPELL_BLOODRAGE": 2687,                  // a single rank is fine too
+    "WAIT_CHARGE_MS": 4000                    // ignored, no SPELL_ prefix
+},
+"NPC": {
+    "Sequence": [
+        {
+            "Cost": 5,
+            "Name": "ClassTrainer",
+            "Requirements": [
+                "HasTrainableSpell",
+                "Money > 100"
+            ]
+        }
+    ]
+}
+```
+
+##### Two modes: whitelist, or `TrainAll`
+
+The whitelist above is the default. `"TrainAll": true` on the entry instead buys
+**everything the trainer offers that you can afford**, ignoring `SPELL_` entirely:
+
+```json
+{ "Cost": 5, "Name": "ClassTrainer", "TrainAll": true, "Requirements": ["Money > 5000"] }
+```
+
+|  | whitelist *(default)* | `"TrainAll": true` |
+| --- | --- | --- |
+| What it buys | only ids listed in `SPELL_*` `IntVariables` | everything offered and affordable |
+| Who decides | the bot, before setting off | the trainer's own list, on arrival |
+| Gate to use | `HasTrainableSpell` | `Money` and/or `SecondsSinceTrained` |
+| Goes quiet when | nothing whitelisted is learnable | a visit buys nothing, until you next level |
+| Best for | a curated levelling profile | "just teach me everything" |
+
+> **Do not combine `TrainAll` with `HasTrainableSpell`.** That requirement only reads the
+> `SPELL_` whitelist, so both gates have to pass and the trip stays locked to whitelist
+> eligibility. Once those spells are all known it turns false permanently and the trainer
+> is never visited again - even though `TrainAll` would happily have bought everything
+> else. Gate `TrainAll` on `Money` and a cooldown instead.
+
+`TrainAll` cannot use `HasTrainableSpell` because what a trainer sells is only knowable
+once its window is open - there is nothing to check beforehand. That is also why it needs
+its own stopping rule: after a visit that buys nothing it goes quiet until your next
+level-up, since levelling is the only thing that changes what is on offer.
+
+In the log a `TrainAll` visit reads `offering 0 spell(s) to learn - everything offered`.
+The zero is expected: no id list is sent, the addon does the choosing. It reports back
+what it actually bought, so `Trained N spell(s)` and the action bar placement still name
+real spells.
+
+One limitation: to report a purchase the addon has to resolve the service to a spell id,
+which it does through the tooltip. A service whose id will not resolve is **skipped
+rather than bought**, so the bot never claims a purchase it cannot account for. If a
+trainer visibly has spells but nothing is bought, that is the case to suspect.
+
+How it decides *(whitelist mode)*:
+* Only **your own class's** trainer is considered. `ClassTrainer` is a single NPC flag
+  shared by every class, so the search additionally requires the NPC's subtitle to name
+  your class - a Warrior goes to a "Warrior Trainer" and never to the Mage one standing
+  next to it. *(Death Knight and Demon Hunter are not wired up for this yet.)*
+* A spell is **trainable** when the player does not know that exact rank and is at or
+  above the level the spell requires. Both come from data the bot already has - the
+  in-game spellbook and `Json/dbc/<client>/spells.json`.
+* At the trainer, the addon matches the whitelist against what that trainer actually
+  offers, checks each price against your purse, and buys what it can afford - cheapest
+  rank first, since lower ranks are prerequisites for higher ones.
+* `HasTrainableSpell` turns false once there is nothing left to learn, which is what
+  stops the bot walking back. **Include it in the requirements** or the entry will keep
+  firing.
+
+**Gating it further.** `HasTrainableSpell` on its own is usually enough - it is true
+exactly while something is learnable, goes false once it is learnt, and becomes true
+again on the level-up that unlocks the next rank. The bot also stops asking by itself
+when a trainer quotes a price it cannot pay, and when no trainer of your class is
+reachable in the zone.
+
+If you want more control, prefer facts that **do not decay while the bot walks**:
+
+```json
+// only bother when there is plausibly enough coin
+{ "Name": "ClassTrainer", "Requirements": ["HasTrainableSpell", "Money > 1000"] }
+
+// at most one trainer trip every ten minutes
+{ "Name": "ClassTrainer", "Requirements": ["HasTrainableSpell", "SecondsSinceTrained > 600"] }
+```
+
+> **A requirement is re-checked while the goal runs, not just when it starts.** A
+> narrowing window such as `SecondsSinceVendored < 120` therefore expires *during* the
+> walk to the trainer: the goal is dropped part-way and, since that number only grows,
+> it never re-opens until the next vendor trip. Use a widening test
+> (`SecondsSinceTrained > 600`) or a state one (`Money > 1000`) for anything the bot has
+> to travel for. `SecondsSinceVendored` is fine for a check made on the spot.
+
+Likewise `SpellsTrained == 0` means "once per bot run", which is not what a levelling
+profile wants - a 1-10 profile trains repeatedly as it levels. It is there for
+reporting, not for gating.
+
+`VendoredOrRepairedRecently` is a different thing again: a flag latched by a vendor
+visit and cleared only by a successful **mail** run, so without mail enabled it stays
+true forever after the first sale.
+
+Notes:
+* Ids the running client does not have are skipped with a warning, so a profile shared
+  between expansions does not break - e.g. `Victory Rush` does not exist in Classic Era.
+* If the trainer teaches nothing on the whitelist (wrong class, or a profile listing
+  spells it does not sell) that NPC is skipped from then on and the search moves to the
+  next one.
+* If a wanted spell is offered but unaffordable, the entry goes quiet until the wallet
+  grows, rather than walking back and forth.
+* The NPC search obeys [`CrossZoneSearch`](#classconfiguration) like every other NPC
+  entry, so by default only trainers in the **current zone** are considered. If none is
+  found there, the entry goes quiet until you move to another zone - otherwise it would
+  keep being chosen and keep finding nothing, since `HasTrainableSpell` can stay true
+  for a whole zone's worth of levels.
+* **Mists of Pandaria (5.4.8) grants class spells on level up** and its trainers do not
+  sell them, so a `ClassTrainer` entry has nothing to do there. It reports "teaches
+  nothing" and stops rather than failing.
+
+---
 
 #### Safe Path Transitions
 
@@ -1765,11 +2330,11 @@ examples of full automatic npc detection or multiple whitelisted names:
 
 #### NPC KeyAction.MacroText
 
-When going to visit and NPC, not it is possible to specify a templated macro text, where the template variables are shows up as `$` prefixed variables.
+When visiting an NPC, it is possible to specify a templated macro text, where the template variables show up as `$` prefixed variables.
 
 If you want to use the template variable you need to first specify it [StringVariables](#stringvariables).
 
-Rougly speaking the following block does the following, if the player has less then 200 
+Roughly speaking the following block does the following, if the player has less then 200 
 
 ```json
 "NPC": {
@@ -1808,11 +2373,11 @@ In theory if there is a repeatable quest to collect items, you could set up a NP
 
 ### Follow Route Goal
 
-Uses the [Path](#path) settings, follows the given route, uses pathfinding depending on the loaded [Class Configuration](#12-class-configuration)s [Mode](#modes).
+Uses the [Path](#path) settings, follows the given route, uses pathfinding depending on the loaded [Class Configuration](#class-configuration)s [Mode](#modes).
 
 Basic informations
 * Base cost 20.
-* It can be added multiple times via the [Class Configuration.Paths](#12-class-configuration) property array.
+* It can be added multiple times via the [Class Configuration.Paths](#class-configuration) property array.
 
 Meanwhile attempts to
 * find a new possible non blacklisted target
@@ -1842,8 +2407,8 @@ Not all [KeyAction](#keyaction) requires requirement(s), some rely on
 | Use when buff missing | `"!Battle Shout"` | Self-buffs |
 | Use at low health | `"Health% < 30"` | Emergency heals, healthstones |
 | Use at high resource | `"Rage > 50"` | Resource dump abilities |
-| Use when target debuff missing | `"!Target.Sunder Armor"` | Maintain debuffs on target |
-| Use to finish target | `"Target Health% < 20"` | Execute-style abilities |
+| Use when target debuff missing | `"!Sunder Armor"` | Maintain debuffs on target |
+| Use to finish target | `"TargetHealth% < 20"` | Execute-style abilities |
 
 Can specify `Requirements` for complex condition.
 
@@ -1876,12 +2441,10 @@ Formula: `[Negate keyword][requirement]`
 
 | Negate keyword |
 | --- |
-| `"not "` |
 | `"!"` |
 
 e.g.
 ```json
-"Requirement": "not Curse of Weakness"
 "Requirement": "!BagItem:Item_Soul_Shard:3"
 ```
 ---
@@ -1890,7 +2453,7 @@ e.g.
 
 Two or more Requirement can be merged into a single Requirement object. 
 
-By default every Requirement is concataneted with `[and]` operator which means in order to execute the [KeyAction](#keyaction), every member in the `RequirementsObject` must be evaluated to `true`. However this consctruct allows to concatanete with `[or]`. Nesting parenthesis are also supported.
+By default every Requirement is concatenated with `[and]` operator which means in order to execute the [KeyAction](#keyaction), every member in the `RequirementsObject` must be evaluated to `true`. However this construct allows concatenation with `[or]`. Nesting parenthesis are also supported.
 
 Formula: `[Requirement1] [Operator] [RequirementN]`
 
@@ -1912,16 +2475,26 @@ Value base requirement is the most basic way to create a condition.
 
 Formula: `[Keyword] [Operator] [Numeric integer value]`
 
-**Note:** `[Numeric integer value]` always the _right-hand_ side expression value
+**Note:** `[Numeric integer value]` always on the _right-hand_ side expression value
 
-| Operator | Description | 
+| Operator | Description |
 | --- | --- |
 | `==` | Equals |
+| `!=` | Not Equals |
 | `<=` | Less then or Equals |
 | `>=` | Greater then or Equals |
 | `<` | Less then |
 | `>` | Greater then |
-| `%` | Modulo, `true` when the expression is Equals to `0` |
+
+Arithmetic operators can be used to build complex expressions:
+
+| Operator | Description |
+| --- | --- |
+| `+` | Addition |
+| `-` | Subtraction |
+| `*` | Multiplication |
+| `/` | Division |
+| `%` | Modulo (returns remainder). For divisibility check use `Deaths % 2 == 0` |
 
 | Keyword | Description |
 | --- | --- |
@@ -1933,6 +2506,7 @@ Formula: `[Keyword] [Operator] [Numeric integer value]`
 | `Mana` | Player current mana |
 | `Rage` | Player current rage |
 | `Energy` | Player current energy |
+| `Focus` | Player current focus (Hunter from Mists of Pandaria on) |
 | `RunicPower` | Player current runic power |
 | `BloodRune` | Player current blood runes |
 | `FrostRune` | Player current frost runes |
@@ -1940,7 +2514,11 @@ Formula: `[Keyword] [Operator] [Numeric integer value]`
 | `TotalRune` | Player current runes (blood+frost+unholy+death) |
 | `Combo Point` | Player current combo points on the target |
 | `Holy Power` | Player current Holy Power points on the target |
-| `Durability%` | Player worn equipment average durability. **0-99** value range. |
+| `Durability%` | Player worn equipment average durability across **all 18** slots. Dominated by armour, since 15 of the 18 slots are armour. **0-99** value range. |
+| `MainHandDurability%` | Main hand weapon durability. **0-99** value range. |
+| `OffHandDurability%` | Off hand weapon or shield durability. **0-99** value range. |
+| `RangedDurability%` | Ranged weapon (bow / gun / crossbow / wand) durability. **0-99** value range. |
+| `WeaponDurability%` | Lowest of the three weapon slots above - the "is any weapon about to break" check. **0-99** value range. |
 | `BagCount` | How many items in the player inventory |
 | `FoodCount` | Returns the highest amount of food type, item count |
 | `DrinkCount` | Returns the highest amount of drink type, item count |
@@ -1949,6 +2527,7 @@ Formula: `[Keyword] [Operator] [Numeric integer value]`
 | `MaxRange` | Maximum distance(yard) between the player and the target |
 | `LastAutoShotMs` | Time since last detected AutoShot happened in milliseconds |
 | `LastMainHandMs` | Time since last detected Main Hand Melee swing happened in milliseconds |
+| `SinceDamageTakenMs` | Time in milliseconds since player health last decreased (damage taken) |
 | `MainHandSpeed` | Returns the player Main hand attack speed in milliseconds |
 | `MainHandSwing` | Returns the player predicted next main hand swing time |
 | `RangedSpeed` | Returns the player ranged weapon attack speed in milliseconds |
@@ -1960,13 +2539,13 @@ Formula: `[Keyword] [Operator] [Numeric integer value]`
 | `CD_{KeyAction.Name}` | Returns the given `{KeyAction.Name}` **in-game** cooldown in milliseconds |
 | `Cost_{KeyAction.Name}` | Returns the given `{KeyAction.Name}` cost value |
 | --- | --- |
-| `Buff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **player buff** up time in miliseconds |
-| `Debuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **player debuff** up time in miliseconds |
+| `Buff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **player buff** up time in milliseconds |
+| `Debuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **player debuff** up time in milliseconds |
 | --- | --- |
-| `TBuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **target debuff** up time in miliseconds |
-| `TDebuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **target debuff** up time in miliseconds |
+| `TBuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **target debuff** up time in milliseconds |
+| `TDebuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **target debuff** up time in milliseconds |
 | --- | --- |
-| `FBuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **focus buff** up time in miliseconds |
+| `FBuff_{IntVariable_Name}` | Returns the given `{IntVariable_Name}` remaining **focus buff** up time in milliseconds |
 | --- | --- |
 | `CurGCD` | Returns the player current remaining GCD time |
 | `GCD` | Alias for `1500` value |
@@ -1976,14 +2555,30 @@ Formula: `[Keyword] [Operator] [Numeric integer value]`
 | `SessionSeconds` | Returns with the elapsed time in Seconds since the Session started.<br>The Session starts when the `Start Bot` button is pressed! |
 | `SessionMinutes` | Returns with the elapsed time in Minutes since the Session started.<br>The Session starts when the `Start Bot` button is pressed! |
 | `SessionHours` | Returns with the elapsed time in Hours since the Session started.<br>The Session starts when the `Start Bot` button is pressed! |
+| `PartyRole` | The configured party role: `0` = Tank, `1` = Healer, `2` = DPS. For example, `PartyRole == 1` limits an action to healers. |
 | `ExpPerc` | Returns with the player experience as percentage to hit next level. |
+| `SecondsSinceVendored` | Seconds since the last successful vendor/repair visit. A very large number until the first one, so "it has been a while" reads true from the start. **Only grows** - see the warning under [Class Trainer](#class-trainer) before using it as an upper bound on a goal that has to travel. |
+| `SecondsSinceTrained` | Seconds since the last successful [class trainer](#class-trainer) visit, same convention. Safe as a cooldown (`> N`). |
+| `SpellsTrained` | How many spells have been learnt from a trainer this session. Intended for reporting - as a gate it only expresses "once per bot run". |
+| `Money` | Returns the player's purse in **copper** - the unit every price in the game is quoted in. e.g. `Money > 5000` is "more than 50 silver". |
+| `Gold` | Returns the player's purse in whole **gold**, the copper and silver remainder dropped. e.g. `Gold >= 10`. |
 | `UIMapId` | Returns with the player current [UIMapId](https://github.com/Xian55/WowClassicGrindBot/blob/9bea201760babc0f6670df2bd5c071c9c3f1220d/Json/dbc/som/WorldMapArea.json#L3C6-L3C11) |
 | `PathDist` | Returns the context [PathSettings](#pathsettings) of closest distance (in yards) from the player location to the Path. |
 | `PathDist_{PathSettings.Id}` | Returns the closest distance (in yards) from the player location to the Path. |
 
+The durability keywords all report **0-99**, where **0** means broken and **99** means fully repaired.
+
+**99 is also what an empty slot reports**, along with an equipped item that has no durability at all - a thrown weapon, an off hand tome, a Wrath relic. That is deliberate: it keeps `WeaponDurability%` (the lowest of the three weapon slots) meaningful for any spec. A caster with an empty off hand and no ranged weapon gets `WeaponDurability% == MainHandDurability%`, a dual wielder gets the worse of the two, a hunter gets the worst of all three - and a slot that cannot break never drags the value down.
+
+Weapons wear out several times faster than armour, so the all-slot `Durability%` average is late to notice a weapon about to break. Prefer `WeaponDurability%` for a repair gate, on its own or next to `Durability%`:
+
+```json
+"Requirement": "Durability% < 35 || WeaponDurability% < 30"
+```
+
 For the `MinRange` and `MaxRange` gives an approximation range distance between the player and target.
 
-**Note:** _Every class has it own unique way to find these values by using different in game items/spells/interact._
+**Note:** _Every class has its own unique way to find these values by using different in game items/spells/interact._
 
 | MinRange | MaxRange | alias Description |
 | --- | --- | --- |
@@ -2004,19 +2599,24 @@ e.g. Single Requirement
 "Requirement": "Rage > 90"
 "Requirement": "BagCount > 80"
 "Requirement": "MobCount > 1"
+"Requirement": "WeaponDurability% < 30"      // The most worn of main hand / off hand / ranged is below 30%
+"Requirement": "MainHandDurability% < 25"    // Only the main hand weapon
 "Requirement": "MinRange < 5"
 "Requirement": "MinRange > 15"
 "Requirement": "MaxRange > 20"
 "Requirement": "MaxRange > 35"
 "Requirement": "LastAutoShotMs <= 500"
 "Requirement": "LastMainHandMs <= 500"
+"Requirement": "SinceDamageTakenMs < 5000"
 "Requirement": "CD_Judgement < GCD"                 // The remaining cooldown on Judgement is less then GCD(1500)
 "Requirement": "CD_Hammer of Justice > CD_Judgement" // The remaining cooldown on Hammer of Justice is greater then 8 seconds
 "Requirement": "Rage >= Cost_Heroic Strike"          // Create a condition like if player current rage is greater then or equal the cost of Heroic Strike
 "Requirement": "MainHandSpeed > 3500"   // Main hand attack speed is greater then 3.5 seconds
 "Requirement": "MainHandSwing > -400"   // 400 milliseconds before next predicted main swing happen
 "Requirement": "MainHandSwing > -400"   // 400 milliseconds before next predicted main swing happen
-"Requirement": "Dead && Deaths % 2"   // Player is currently dead and died for the second time in the current session
+"Requirement": "Dead && Deaths % 2"           // Player is currently dead and died for the second time in the current session
+"Requirement": "Deaths % 2 == 1"              // Player died odd number of times (explicit comparison)
+"Requirement": "Energy - Cost_Sinister_Strike >= 0"  // Enough energy remaining after cast
 ```
 
 e.g. List of Requirements
@@ -2025,6 +2625,19 @@ e.g. List of Requirements
     "TargetHealth% > DOT_MIN_HEALTH%",  // where DOT_MIN_HEALTH% is a user defined variable
     "!Immolate"
 ],
+```
+
+#### Complex Expressions
+
+Both sides of a comparison can be full arithmetic expressions mixing variables, constants, and operators. Parentheses control evaluation order, and standard math precedence applies (`*`/`/`/`%` bind tighter than `+`/`-`).
+
+e.g.
+```json
+"Requirement": "(Health% + Mana%) / 2 > 50"             // Average of health and mana above 50%
+"Requirement": "Energy - Cost_Sinister_Strike >= 0"      // Enough energy after spell cost
+"Requirement": "MainHandSwing > -SpellQueueWindow"       // Swing timer vs queue window
+"Requirement": "SessionMinutes % 40 < 20"                // First 20 min of every 40 min cycle
+"Requirement": "Kills % 5 == 0 && SessionMinutes > 10"   // Every 5th kill after 10 minutes
 ```
 
 e.g. for `CD`: It's a good idea to put `CD` in healing spells to take consideration of the spell interruption.
@@ -2061,11 +2674,13 @@ If a particular npc is required then this requirement can be used.
 
 Formula: `npcID:[intVariableKey/Numeric integer value]`
 
+When the variable is an array (e.g. `[6195, 6196, 6197]`), returns true if the target matches ANY NPC ID in the array.
+
 e.g.
 
 * `"Requirement": "!npcID:6195"` - target is not [6195](https://tbc.wowhead.com/npc=6195)
 * `"Requirement": "npcID:6195"` - target is [6195](https://tbc.wowhead.com/npc=6195)
-* `"Requirement": "npcID:MyAwesomeIntVariable"`
+* `"Requirement": "npcID:MyAwesomeIntVariable"` - single or array IntVariable
 
 ---
 ### **Bag requirements**
@@ -2076,13 +2691,16 @@ Useful to determine when to create warlock Healthstone or soul shards.
 
 Formula: `BagItem:[intVariableKey/itemid]:[count/IntVariablesKey]`
 
+When the variable is an array (e.g. `[5512, 5511, 5509]`), the item counts across all IDs are summed and compared to the required count. This is useful for items with multiple ranks like Healthstones.
+
 e.g.
 
 * `"Requirement": "BagItem:5175"` - Must have a [Earth Totem](https://tbc.wowhead.com/item=5175) in bag
-* `"Requirement": "BagItem:Item_Soul_Shard:3"` - Must have atleast [3x Soulshard](https://tbc.wowhead.com/item=6265) in bag
-* `"Requirement": "not BagItem:19007:1"` - Must not have a [Lesser Healthstone](https://tbc.wowhead.com/item=19007) in bag
+* `"Requirement": "BagItem:Item_Soul_Shard:3"` - Must have at least [3x Soulshard](https://tbc.wowhead.com/item=6265) in bag
+* `"Requirement": "!BagItem:19007:1"` - Must not have a [Lesser Healthstone](https://tbc.wowhead.com/item=19007) in bag
 * `"Requirement": "!BagItem:6265:3"` - Must not have [3x Soulshard](https://tbc.wowhead.com/item=6265) in bag
 * `"Requirement": "!BagItem:MyAwesomeIntVariable:69"`
+* `"Requirement": "BagItem:ITEM_HEALTHSTONE_ALL:1"` - Using array IntVariable, true if ANY item in the array is in bag
 
 ---
 ### **Form requirements**
@@ -2125,7 +2743,7 @@ Formula: `Form:[form]`
 e.g.
 ```json
 "Requirement": "Form:Druid_Bear"    // Must be in `Druid_Bear` form
-"Requirement": "!Form:Druid_Cat"    // Shoudn't be in `Druid_Cat` form
+"Requirement": "!Form:Druid_Cat"    // Shouldn't be in `Druid_Cat` form
 ```
 
 ---
@@ -2155,7 +2773,7 @@ Formula: `Race:[race]`
 e.g. 
 ```json
 "Requirement": "Race:Orc"          // Must be `Orc` race
-"Requirement": "!Race:Human"    // Shoudn't be `Human` race
+"Requirement": "!Race:Human"    // Shouldn't be `Human` race
 ```
 
 ---
@@ -2263,6 +2881,37 @@ e.g.
 ```
 
 ---
+### **RangedWeapon requirements**
+
+Check what **kind** of weapon occupies the ranged slot. `Equipment:Ranged` only says
+something is there; this says whether it is a bow, a gun, a crossbow, a wand or a thrown
+weapon.
+
+The motivating case is ammunition: a bow and a crossbow consume arrows, a gun consumes
+bullets, and a wand consumes neither. Without this a restocking entry has to hardcode one
+ammo item and is wrong for the other half of the weapons.
+
+Formula: `RangedWeapon:[subclass]`
+
+| subclass |
+| --- |
+| Bow |
+| Gun |
+| Crossbow |
+| Thrown |
+| Wand |
+
+Any other [`ItemWeaponSubclass`](SharedLib/Data/ItemWeaponSubclass.cs) name is accepted
+too. An unknown name throws at profile load rather than silently never matching.
+
+e.g.
+```json
+"Requirement": "RangedWeapon:Gun"                          // Gun equipped - needs bullets
+"Requirement": "RangedWeapon:Bow || RangedWeapon:Crossbow" // Either - needs arrows
+"Requirement": "!RangedWeapon:Wand"                        // Anything but a wand
+```
+
+---
 ### **Spell requirements**
 
 If a given Spell `name` or `id` must be known by the player then you can use this requirement. 
@@ -2273,20 +2922,22 @@ It has the following formulas:
 
 * `Spell:[name]`. The `name` only works with the English client name.
 * `Spell:[id]`
+* `Spell:[IntVariablesKey]` - Resolves to a single spell ID or an array of IDs. When the variable is an array (e.g. `[100, 6178, 11578]`), returns true if ANY spell in the array is known.
 
 e.g.
 
 * `"Requirement": "Spell:687"` - Must have know [`id=687`](https://tbc.wowhead.com/item=687)
 * `"Requirement": "Spell:Demon Skin"` - Must have known the given `name`
 * `"Requirement": "!Spell:702"` - Must not have known the given [`id=702`](https://tbc.wowhead.com/item=702)
-* `"Requirement": "not Spell:Curse of Weakness"` - Must not have known the given `name`
+* `"Requirement": "!Spell:Curse of Weakness"` - Must not have known the given `name`
+* `"Requirement": "Spell:SPELL_CHARGE"` - Using IntVariable (single or array)
 
 ---
 ### **Talent requirements**
 
 If a given Talent `name` must be known by the player then you can use this requirement. 
 
-Useful to determine when the given Talent is learned. Also can specify how many points have to be spent minimium with `rank` which can be constant or a variable in `IntVariables`
+Useful to determine when the given Talent is learned. Also can specify how many points have to be spent minimum with `rank` which can be constant or a variable in [`IntVariables`](#intvariables)
 
 Formula: `Talent:[name]:[rank/IntVariablesKey]`. The `name` only works with the English client name.
 
@@ -2294,20 +2945,21 @@ e.g.
 
 ```json
 "Requirement": "Talent:Improved Corruption"    // Must known the given `name`
-"Requirement": "Talent:Improved Corruption:5"  // Must know the given `name` and atleast with `rank`
-"Requirement": "not Talent:Suppression"        // Must have not know the given `name` 
+"Requirement": "Talent:Improved Corruption:5"  // Must know the given `name` and at least with `rank`
+"Requirement": "!Talent:Suppression"        // Must have not know the given `name`
 ```
 ---
 ### **Player Buff remaining time requirements**
 
-First in the `IntVariables` have to mention the buff icon id such as `Buff_{your fancy name}: {icon_id}`.
+First in the [`IntVariables`](#intvariables) have to mention the buff icon id such as `Buff_{your fancy name}: {icon_id}`.
 
 It is important, the addon keeps track of the **icon_id**! Not **spell_id**
 
 e.g.
 ```json
 "IntVariables": {
-    "Buff_Horn of Winter": 134228
+    "Buff_Horn of Winter": 134228,
+    "Item_Healthstone_All": [19005, 19004, 5512, 19006, 19007, 5511, 19009, 5509, 19008, 5510, 19011, 19010, 19012, 9421, 19013],
 },
 ```
 
@@ -2331,28 +2983,22 @@ e.g.
 ---
 ### **Player Debuff remaining time requirements**
 
-First in the `IntVariables` have to mention the buff icon id such as `Debuff_{your fancy name}: {icon_id}`.
+First in the [`IntVariables`](#intvariables) have to mention the debuff icon id such as `Debuff_{your fancy name}: {icon_id}`.
 
 It is important, the addon keeps track of the **icon_id**! Not **spell_id**
 
-e.g.
+A single icon id:
 ```json
 "IntVariables": {
-    "Debuff_POISON1": 136006,
-    "Debuff_POISON2": 136007,
-    "Debuff_POISON3": 136016,
-    "Debuff_POISON4": 136064,
-    "Debuff_POISON5": 136067,
-    "Debuff_POISON6": 136077,
-    "Debuff_POISON7": 136093,
-    "Debuff_POISON8": 134437,
-    "Debuff_POISON9": 132273,
-    "Debuff_POISON10": 132274,
-    "Debuff_POISON11": 132105,
-    "Debuff_DISEASE1": 136127,
-    "Debuff_DISEASE2": 136134,
-    "Debuff_DISEASE3": 134324,
-    "Debuff_DISEASE4": 135914
+    "Debuff_Poison": 135368
+},
+```
+
+An **array of icon ids** — the variable returns the max remaining time across all listed icons, so the requirement is true when **any** of them is active:
+```json
+"IntVariables": {
+    "Debuff_POISON": [136006, 136007, 136016, 136064, 136067, 136077, 136093, 134437, 132273, 132274, 132105],
+    "Debuff_DISEASE": [136127, 136134, 134324, 135914]
 },
 ```
 
@@ -2364,14 +3010,14 @@ e.g.
     "Name": "Stoneform",
     "Key": "F11",
     "Requirements": [
-        "Debuff_POISON1 > 1 || Debuff_POISON2 > 1 || Debuff_POISON3 > 1 || Debuff_POISON4 > 1 || Debuff_POISON5 > 1 || Debuff_POISON6 > 1 || Debuff_POISON7 > 1 || Debuff_POISON8 > 1 || Debuff_POISON9 > 1 || Debuff_POISON10 > 1 || Debuff_POISON11 > 1 || Debuff_DISEASE1 > 1 || Debuff_DISEASE2 > 1 || Debuff_DISEASE3 > 1 || Debuff_DISEASE4 > 1"
+        "Debuff_POISON > 1 || Debuff_DISEASE > 1"
     ]
-}  
+}
 ```
 ---
 ### **Target Debuff remaining time requirements**
 
-First in the `IntVariables` have to mention the debuff icon id such as `TDebuff_{your fancy name}: {icon_id}`
+First in the [`IntVariables`](#intvariables) have to mention the debuff icon id such as `TDebuff_{your fancy name}: {icon_id}`
 
 It is important, the addon keeps track of the **icon_id**! Not **spell_id**
 
@@ -2479,7 +3125,7 @@ If you feel the current Requirement toolset is not enough for you, you can use o
     !WA:2!1rvWUTTrq0O6dPGOiXXT1afTaLWT1ibTiW2fnfOO9GOmvScKTuiPJtApqUK7qXnMC3f7Uu2khf6HCwFc6CpXpH8fqi0Va)j4VGUlPQHBrIoioZUZS78EZ82o93Qyl8w43(DcwPkNqbXOtdgo4exXLJstLGQtfMi55OzbWLQpALmdHzx8Q29(Q7uHOjzmXygHQI75EsGRh3(wjeMYefivipurkG1ED4BMukvScteNYXif4btbQ6kuPEvKIKCgbRYC6QDfOefHrLpXtQqc1UlWSW2SJIB)Y)SdrkuaRhlNj(fFq9W9(H9FKdHsuBxF)S4uTLmB367hvV57l29E0CLGmzciK3BxXAZ3(1ZjkO4eub05kzzCt9nwaPKl98h7oC41LsiSaKs0eiyghIENzH)nNi(dmUtanHss8ZyxmIgT6)4ELS5tpglxZO05M4l11CKJ5)d4GYtGOtGD2FVQMJMovxHqwtGzikoAHKd55nLOJsxc12x1KriJdcKM625x)TLyiUmn1uHIJChoU)Pdx0Gftc8pF8WUVY1l0Z9PUNeE4a)UodDpCL5gsB59bhgDd891he5YQWED9dc9d66f0e5nhxuScLRTTCm9zRARkpt5y3ldsoVHEIHm0uctKTsaOC)Bk)MZ5g0enVXCawATWSrdOIQUfHN5r1XTEBLEe58OQB1l4B27OUbHh7)0WZoAGUD5TOKUUXAXFGbztHGw)Jzy4VUd)lFVdTTgEMzx816rCqqr5Vq3g0mZFSqc5PTt(oJccgDSg2ufFZ(cYBSFEjcR7bi7GGLA(ZdMygITCYzi8lAk7KCKugvV32EfL5kILJg0jBxpWYRzNDJLe6KCi(OtnQk96osYBataZn3JV25lwlhFzRCCJLIMRXqboknqwMWOysJ8XI)nFyzjxajedM2yLwbQ1ZJ4TjjMT(raXR1sns6m94r)GLkwY0ws4JhV9oem)BZknKJTEO1MqT3FVz2nnnB99yNca2SZbLeCL354H)0lF4Zrf)EvQq3e9vgAAJRBFiPVzjt9h73ZZ19eVeJq9zBO)fRbtkzI18lyc8zceF(zRn4F)hgA4z6jfssOktaAbxoEwvlN18cWZ60PZgl1d1aU5fN)8tQi02dqdoRfikP18j13RF9UougfEhGKMQgOtuz3DfUu0erOrbO1Ngkxo3eJbg1eNceHQZTMu)67wFEDEDH28t))RSL07hF8p)4d2A6F)Y)5
     ```
 
-1. **Then outside of the game, you can specify the following in the [Class Configuration](#12-class-configuration) file ex. `class/Hunter_62.json`**
+1. **Then outside of the game, you can specify the following in the [Class Configuration](#class-configuration) file ex. `class/Hunter_62.json`**
 
     Formula: `Trigger:[bit]:[name]`
 
@@ -2489,14 +3135,14 @@ If you feel the current Requirement toolset is not enough for you, you can use o
     ```json
     "Requirement": "Trigger:0:Pet in range"           // Trigger 0 must be true
     "Requirement": "Trigger:23:My Awesome trigger"    // Trigger 23 must be true
-    "Requirement": "not Trigger:6:Suppression"        // Trigger 6 must be false
+    "Requirement": "!Trigger:6:Suppression"        // Trigger 6 must be false
     ```
 ---
 ### **Buff / Debuff / General boolean condition requirements**
 
 Allow requirements about what buffs/debuffs you have or the target has or in general some boolean based requirements.
 
-| General boolean condition | Desciption |
+| General boolean condition | Description |
 | --- | --- |
 | `"TargetYieldXP"` | The target yields experience upon death. (Grey Level) |
 | `"TargetsMe"` | The target currently targets the player |
@@ -2522,13 +3168,15 @@ Allow requirements about what buffs/debuffs you have or the target has or in gen
 | `"DamageTakenFromTotem"` | The player has taken damage from a Totem creature type. Useful to detect nearby totems. |
 | `"Has Pet"` | The player's pet is alive |
 | `"Pet HasTarget"` | Players pet has target |
-| `"Pet Happy"` | Pet happienss is green |
+| `"Pet Happy"` | Pet happiness is green |
+| `"PetCanPull"` | The pet is alive and at least one of its spells is castable right now. False once the pet runs out of power - an Imp with no mana for Firebolt stands still instead of closing to melee, so a pull handed to the pet never happens. |
 | `"Mounted"` | Player riding on a mount (druid form excluded) |
 | `"BagFull"` | Inventory is full |
 | `"BagGreyItem"` | Indicates that there are at least one Grey Quality level item. |
 | `"Items Broken"` | Has any broken(red) worn item |
-| `"HasRangedWeapon"` | Has equipped ranged weapon (wand/crossbow/bow/gun) |
+| `"HasRangedWeapon"` | Has equipped ranged weapon (wand/crossbow/bow/gun). To tell *which*, see [RangedWeapon requirements](#rangedweapon-requirements). |
 | `"HasAmmo"` | AmmoSlot has equipped ammo and count is greater than zero |
+| `"HasTrainableSpell"` | There is at least one spell on the [class trainer whitelist](#class-trainer) the player does not know yet and is high enough level to learn. Also false while the spellbook is still loading. Note the bot applies two further checks of its own that this variable does not expose - see the [Class Trainer](#class-trainer) notes. |
 | `"Casting"` | The player is currently casting any spell. |
 | `"HasTarget"` | The player currently has a target. |
 | `"TargetAlive"` | The player currently has an alive target. |
@@ -2610,7 +3258,7 @@ Allow requirements about what buffs/debuffs you have or the target has or in gen
 | Warlock | `"Demon Armor"` |
 | Warlock | `"Demon Skin"` |
 | Warlock | `"Shadow Trance"` |
-| Warlock | `"Soulstone Resurraction"` |
+| Warlock | `"Soulstone Resurrection"` |
 | Warlock | `"Soul Link"` |
 | Warlock | `"Fel Armor"` |
 | Warlock | `"Fel Domination"` |
@@ -2701,7 +3349,7 @@ Allow requirements about what buffs/debuffs you have or the target has or in gen
 e.g.
 ```json
 "Requirement": "!Well Fed"         // I am not well fed.
-"Requirement": "not Thorns"        // I don't have the thorns buff.
+"Requirement": "!Thorns"           // I don't have the thorns buff.
 "Requirement": "AutoAttacking"     // "Auto Attack" spell is active.
 "Requirement": "Shooting"          // "Shoot" spell is active.
 "Requirement": "Items Broken"      // Worn armor is broken (red).
@@ -2717,7 +3365,7 @@ e.g.
 
 Allow requirements about spell range to be used, the spell in question depends upon the class being played.
 
-`"SpellInRange:0"` or `"not SpellInRange:0"` for a Warrior is Charge and for a Mage is Fireball. 
+`"SpellInRange:0"` or `"!SpellInRange:0"` for a Warrior is Charge and for a Mage is Fireball.
 
 This might be useful if you were close enough for a Fireball, but not for a Frostbolt.
 
@@ -2747,7 +3395,7 @@ Formula: `SpellInRange:[Numeric integer value/IntVariablesKey]`
 | Priest | Mind Blast | 3 |
 | Priest | Smite | 4 |
 | Priest | Divine Spirit | 5 |
-| Priest | Power World: Fortitude | 6 |
+| Priest | Power Word: Fortitude | 6 |
 | Priest | Power Word: Shield | 7 |
 | Priest | Lesser Heal | 8 |
 | Priest | Prayer of Mending | 9 |
@@ -2826,7 +3474,7 @@ e.g. Rogue_20.json
 },
 {
     "Name": "Kick",
-    "Requirement": "not TargetCastingSpell"
+    "Requirement": "!TargetCastingSpell"
 },
 {
     "Name": "Kick",
@@ -2835,7 +3483,7 @@ e.g. Rogue_20.json
 },
 {
     "Name": "Kick",
-    "Requirement": "not TargetCastingSpell:11443"
+    "Requirement": "!TargetCastingSpell:11443"
 }
 ```
 
@@ -2852,7 +3500,7 @@ As of now every [Goal groups](#goal-groups) has a default Interrupt.
 * [Adhoc Goals](#adhoc-goals) based [KeyAction(s)](#keyaction) depends on `KeyAction.InCombat` flag.
 * [Assist Focus Goal](#assist-focus-goal) based [KeyAction(s)](#keyaction) interrupted once the target dies and the player loses the target.
 
-Here's and example for low level Hunters, while playing without a pet companion take advantage of interrupt.
+Here's an example for low level Hunters, while playing without a pet companion take advantage of interrupt.
 
 It attempts to step back for a maximum **3000**ms duration however this can be interrupted either
 * losing the current target
@@ -2882,7 +3530,7 @@ This **500**ms duration is the reload animation time, while the player has to st
 ```
 ---
 
-Execute low hp enemy instead of awaitning the currently casted spell.
+Execute low hp enemy instead of awaiting the currently casted spell.
 
 The key takeaway here is that the `Earth Shock` spell has higher priority.
 
@@ -3022,18 +3670,59 @@ Pathed routes are shown in Green.
 
 ### Leaflet
 
-**Note:** Currently the component **only** works with
-* som -> 1.13.x - 1.14.x - 1.15.x
-* tbc -> 2.5.x
+**Supported:** every era the bot supports — `precata` (`som` 1.13–1.15, `tbc`
+2.5.x, `wrath` 3.3.5), `cata` (4.3.4) and `mop` (5.4.8). Clients inside one era
+share a tile set, because the world art only changed between them.
 
-Also it is required to download the map tiles
-* [som - Azeroth and Kalimdor map tiles](https://mega.nz/file/mfgiRRLQ#RvUjd-eb1pMOC5GXCI4jDfpiYyiAUJK_gGfkaWGtz0I)
-* * Copy the content under the `json\leaflet\som` folder.
-* * So the path look like this `Json\leaflet\som\Azeroth\z2x0y0.png`
+**Nothing is required to see the map.** With no tiles on disk the page streams them
+straight from the CDN: `resolveTileBase()` in `leaflet-watch.js` probes a few known
+low-zoom tiles on the local `/tiles` route per continent, and falls back to
+`https://bot.tortoiseclothing.org/<era>/<Continent>/...` when they are missing. So
+downloading is an **optimization** - worth it for offline use or to avoid per-tile
+latency - not a prerequisite.
 
-* [tbc - Azeroth and Kalimdor and Expansion01 map tiles](https://mega.nz/file/HLAzgJaJ#UxmaVPSLqgbdl_OQ75vd9C1_DV1kTJxzq-Ce727Z8mw)
-* * Copy the content under the `json\leaflet\tbc` folder.
-* * So the path look like this `Json\leaflet\tbc\Expansion01\z2x0y0.png`
+* The fallback is decided **once per continent at map load**, so a CDN that is
+  unreachable at that moment yields a blank map rather than a retry.
+* `localStorage.leafletTilesLocal = '0'` forces the CDN even when local tiles exist
+  (handy for checking what a fresh user sees).
+
+**Download them for offline use:**
+```powershell
+.\scripts\download-leaflet.ps1               # every published era
+.\scripts\download-leaflet.ps1 -Era mop
+```
+Pulls one `<era>-tiles.zip` per era into `<Root>/leaflet/<era>` (destination
+honors your `data_config.json` `Root`). `.bat\download-leaflet.bat` is a
+double-click wrapper. There is no `-Continent` switch: unlike the navmesh, which
+is bundled per continent and settings-hash, leaflet art has no bake parameters,
+so an era is a single object.
+
+| era | clients | tiles | bundle |
+|---|---|---|---|
+| `precata` | `som`, `tbc`, `wrath`, `legacy_*` | 19,562 | 77 MB |
+| `cata` | `cata`, `legacy_cata` | 12,262 | 53 MB |
+| `mop` | `mop`, `legacy_mop` | 26,972 | 101 MB |
+
+> The `cata` bundle holds only Azeroth and Kalimdor. Northrend and Outland are
+> served from `precata` (`DataConfig.TileEra`) because their minimap art is
+> effectively unchanged, so pair `-Era cata` with `-Era precata` for full
+> coverage. `mop` ships all five continents, Pandaria included.
+
+**Or generate them from your own client:**
+```
+python scripts/extract-minimap.py
+```
+
+* Requires `pip install Pillow` (decodes BLP, writes webp).
+* Reads the client archives from `Json\MPQ` by default (override with the
+  `WOW_MPQ` env var); uses the bundled `PPather\MPQ\StormLib_x64.dll`.
+* Writes `Json\leaflet\<era>\<Continent>\z{z}x{x}y{y}.webp`; pick the era with
+  `LEAFLET_ERA` (default `precata`).
+* Prints the `Configs` entry (resX/resY/offset) for each continent, matching
+  `Frontend\wwwroot\script\leaflet-watch.js`.
+
+The `/tiles` route resolves to `Json\leaflet\<era>` (`DataConfig.Leaflet`), so
+running the bot as som, tbc or wrath all serve the same `precata` tiles.
 
 This component is meant to replace the Route later on, it has *'readonly'* mode when no authoring is enabled.
 
@@ -3041,7 +3730,7 @@ This component is meant to replace the Route later on, it has *'readonly'* mode 
 
 ---
 
-While in the sidebar the Leaflet option theres the authoring tool.
+While in the sidebar the Leaflet option there's the authoring tool.
 
 ![Leaflet](images/leafletAuthor.png)
 
@@ -3051,7 +3740,48 @@ Which allows the draw shapes
 * circle with custom radius
 * single point
 
-TODO: These shapes can be used for the V1 navigation system.
+#### Roads and danger zones — steering the navmesh
+
+Drawn shapes are not just annotations: they **price the navmesh query**, so the routes
+the bot actually walks change to match what you draw.
+
+| You draw | Effect on routing |
+| ---- | ---- |
+| **Polyline** = a road (safe corridor) | Routes are pulled onto it. A road costs **0.6×** what the same distance costs off-road, so the pathfinder prefers the long way round on a road over a short scramble across open ground. |
+| **Rectangle** = danger zone | The enclosed area is priced up (`Avoid`) or made impassable (`Block`). |
+| **Circle** = danger zone | Same, as a centre plus radius — the natural shape for "stay this far away from that elite camp". |
+
+Each danger zone carries a **`Penalty`** multiplier and a **`Mode`**:
+
+* **`Avoid`** — multiplies the cost of crossing, capped at 25× so one zone cannot swamp
+  the search. The bot crosses anyway if there is no reasonable alternative.
+* **`Block`** — impassable. This can genuinely leave a destination unreachable, which is
+  the point, but draw it carefully.
+
+**Query-time, no rebake.** Zones are rasterized onto the 33.33 yd terrain-chunk grid and
+consulted by the Detour query filter as a single lookup. Editing a road or a zone takes
+effect on the **next path request** — the navmesh cache is untouched and nothing is
+invalidated. The files are watched and hot-reloaded; a partial read (the watcher firing
+mid-save) is discarded rather than applied, so a half-written file will not drop your
+roads.
+
+Saved per **era**, continent and UI map (`DataConfig.Road`, which is era-partitioned like
+the navmesh and tiles — clients that share a world share their roads):
+
+```
+Json\road\<era>\<Continent>\<uiMapId>.json               roads
+Json\road\<era>\<Continent>\dangerzone\<uiMapId>.json    danger zones
+```
+
+Both are plain JSON and hand-editable. Tuning knobs live under `Navmesh:Query` —
+`RoadCore` (default `8`) is the half-width in yards that still routes at full road cost,
+the carriageway itself; beyond it the cost ramps back up to open ground.
+
+> A road is priced as the **1.0 baseline** and open ground made dearer, rather than
+> pricing roads below 1.0. Detour's A* heuristic assumes no traversal is ever cheaper
+> than ~1.0 per unit distance, so a sub-1.0 road made it overestimate the remaining cost
+> and long routes came back truncated — Moonbrook to Goldshire reached 628 yd of 2417 yd.
+> The relative preference is identical either way.
 
 After clicking on any zone, that zone will be the currentArea.
 
@@ -3062,11 +3792,11 @@ On the other hand, when pressing the *redcross* button it is possible to record 
 How to record and save a path ?
 * Make sure to have a loaded class profile
 * Navigate to Leaflet
-* Go to the start locatin
+* Go to the start location
 * Press the *redcross* button to start the record
 * When the desired route is reached, press the *redcross* button once again.
 * You should see a yellow highlight of the path has been added then it will become red.
-* **Right click** on the the recorded path, to enable edit mode.
+* **Right click** on the recorded path, to enable edit mode.
 * Edit mode is active when you should be able to move the route node points.
 * Mouse **middle click** or **scroll button click** on the Route to save it (should see a yellow highlight once again)
 * The route will be saved as the `CurrentZoneName_YYYY_MM_DD_HH_MM_SS.json` under the `/json/path` folder. (example: `Durotar_2025_04_21_15_45_21.json`)
@@ -3169,7 +3899,7 @@ These paths are run from one end to the other and then repeated. So the path nee
 
 Try to avoid the path getting too close to:
 
-* Obstactles like trees, houses.
+* Obstacles like trees, houses.
 * Steep hills or cliffs (falling off one can make the bot get stuck).
 * Camps/groups of mobs.
 * Elite mob areas, or solo elite paths.
@@ -3184,7 +3914,49 @@ The best places to grind are:
 
 # V1 Remote Pathing - PathingAPI
 
-Pathing is built into the bot so you don't need to do anything special except download the MPQ files. You can though run it on its own server to visualise routes as they are created by the bot, or to play with route finding.
+Pathing is built into the bot, so you don't need to do anything special except provide
+navmesh tiles - `download-navmesh.ps1`, no MPQ files required (see
+[Setting up navigation](#setting-up-navigation--the-short-version)). You can though run
+it on its own server to visualise routes as they are created by the bot, or to play with
+route finding.
+
+> **One client at a time.** The `RateLimit` filter answers a concurrent request with
+> HTTP 429, so this is not a shared service for several bots - see
+> [Running multiple bots](#running-multiple-bots).
+
+### Serving V3 clients from PathingAPI (AnTCP)
+
+PathingAPI can also speak **AmeisenNavigation's binary AnTCP protocol**, so a bot
+configured for `RemoteV3` talks to this server and gets routes from this project's
+era-aware navmesh - no AmeisenNavigation binary, no MMAP files, no second process.
+
+Off by default (it opens a socket); enable in `PathingAPI\appsettings.json`:
+
+```json
+"Pathing": { "AnTcp": { "Enabled": true, "Ip": "127.0.0.1", "Port": 47111 } }
+```
+
+Then set `Pathing:Mode=RemoteV3` on the bot. Port **47111** is the shipped `portv3`, so
+`hostv3`/`portv3` need no change — enabling the listener is the only step.
+
+> **Replacing an existing AmeisenNavigation install?** Its own default is **47110**, so
+> either set `"Port": 47110` here or leave the bot's `portv3` pointing at whatever your
+> old setup used. A port mismatch fails quietly: the ping fails and the bot falls back
+> to `RemoteV1`/`Local`, so it still walks and nothing says the remote was ignored.
+
+Only the **PATH** message is implemented, because it is the only one the bot ever
+sends (`RemotePathingAPIV3` hardcodes it; its other traffic is the TCP connect used as
+a ping). Other message types get an explicit empty reply rather than hanging. Unlike
+the HTTP API, concurrent clients **queue** rather than receive 429 - a warm query is
+single-digit milliseconds, so several bots share it comfortably even though the search
+still serializes.
+
+> One deliberate difference from AmeisenNavigation: when the client has no z it sends
+> `area.LocTop / 2`, and `LocTop` is a world **Y** bound rather than a height - for
+> Elwynn that is -3969 against terrain at 82. AmeisenNavigation absorbs it with a very
+> tall poly-search extent; this engine uses tight vertical extents so multi-floor
+> buildings resolve correctly, so the server instead snaps any z further than 128 yd
+> from the walkable surface onto it. A bot that genuinely knows its height keeps it.
 
 The bot will try to calculate a path in the following situations:
 
@@ -3206,6 +3978,31 @@ dotnet run --configuration Release
 ```
 
 Then in a browser go to http://localhost:5001
+
+**Startup arguments**
+
+| argument | Description | Default |
+| ---- | ---- | ---- |
+| `--exp=<client>` | Which client's data to serve. Decides `/dbc`, `/tiles` and the navmesh era | `som` |
+| `--Pathing:Engine=` | `Navmesh` or `SpotAStar` | `Navmesh` |
+| `--bake=<continent>` | Kick a background navmesh bake as the server starts; `all` for every continent. The API serves immediately — progress is on `GET api/PPather/Bake/Status` | off |
+| `--bake-area=<continent>` | One-time area-id grid extraction, so area lookups answer without game files; `all` for every continent | off |
+| `--urls http://…` | Override the listen address | `http://localhost:5001` |
+
+```ps
+dotnet run -c Release -- --exp=cata
+dotnet run -c Release -- --exp=legacy_mop --bake=all
+```
+
+Baking needs the game archives in `Json\MPQ`; everything else does not. **`Json\MPQ` is
+not era-aware** — it is one directory for whichever client you point it at, so running
+`--exp=cata` with Wrath archives in there loads Wrath geometry silently and only fails
+on a continent Wrath does not have.
+
+`GET api/PPather/SelfTest` reports what the **active engine** actually needs: for
+`Navmesh` it counts baked tiles per continent for the current era; for `SpotAStar` it
+falls back to checking the archives. It used to check the archives unconditionally and
+so reported failure on every tiles-only install even though pathing worked.
 
 There are 3 pages:
 
@@ -3311,6 +4108,7 @@ Melee weapon enchant:
 - Position the bot's web UI (browser) on a second monitor, or beside the game window
 - If using one monitor, make the WoW window smaller and position it so the top-left corner is always visible
 - Consider using **Windowed** mode instead of Fullscreen for easier window management
+- **Use a fixed stable framerate** - set the game to a consistent FPS cap such as 15, 30, 60, 90, or 120. These values are tested and proven to provide a stable experience
 
 **Technical explanation:** The addon encodes game state (health, mana, target info, etc.) as colored pixels in frames positioned at the top-left of the screen. The application captures these pixels via screenshot and decodes them. Any overlay or window covering these pixels will cause incorrect readings.
 
@@ -3342,12 +4140,14 @@ Melee weapon enchant:
 - If running multiple WoW clients, use the `-p` parameter to specify the process ID
 
 **Q: Path not found / navigation errors**
-- Ensure MPQ files are downloaded and placed in `Json\MPQ\`
-- For Cataclysm+, you need V3 Remote pathing (AmeisenNavigation)
+- Download the navmesh tiles for your era: `.\scripts\download-navmesh.ps1 -Era precata` (or `cata` / `mop`). This is all that is needed — no game files, no external service.
+- Check the startup log for `disk-only, no game files` per continent. If a continent is missing entirely, its tiles were not downloaded.
+- If you baked your own tiles, the bot must run with the **same** bake settings that produced them. Bake settings name the cache directory, so a mismatch makes every baked tile invisible rather than wrong. Outland is the usual case: it needs `Navmesh:Bake:MinWorldZ: { "Expansion01": -700 }`, which is the shipped default.
+- `Json\MPQ` is only needed to *bake* tiles yourself or to run the legacy `Pathing:Engine=SpotAStar`.
 
 **Q: Class profile won't load**
 - Check JSON syntax - use a JSON validator
-- Ensure all required fields are present (see [Class Configuration](#12-class-configuration))
+- Ensure all required fields are present (see [Class Configuration](#class-configuration))
 - Check the log output for specific error messages
 
 ## Keybinding Issues

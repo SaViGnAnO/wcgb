@@ -5,10 +5,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 using SharedLib;
+using SharedLib.Data;
 using SharedLib.NpcFinder;
 
 using System;
-using System.Buffers;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
@@ -44,9 +44,8 @@ public sealed partial class RequirementFactory
 
     private readonly FrozenDictionary<int, SchoolMask> npcSchoolImmunity;
 
-    private readonly SearchValues<char> negateKeywordsSpan = SearchValues.Create(['!', 'n', 'o', 't', ' ']);
-
     private readonly Dictionary<string, Func<int>> intVariables;
+    private Dictionary<string, int[]> intArrayVariables = [];
 
     private readonly FrozenDictionary<string, Func<bool>> boolVariables;
 
@@ -72,12 +71,7 @@ public sealed partial class RequirementFactory
     public const string HealthP = "Health%";
     public const string ManaP = "Mana%";
 
-    private const string greaterThenOrEqual = ">=";
-    private const string lessThenOrEqual = "<=";
-    private const string greaterThen = ">";
-    private const string lessThen = "<";
-    private const string equals = "==";
-    private const string modulo = "%";
+    private readonly ExpressionParser expressionParser;
 
     public RequirementFactory(IServiceProvider sp, ClassConfiguration classConfig)
     {
@@ -111,6 +105,13 @@ public sealed partial class RequirementFactory
         corpseTracker = sp.GetRequiredService<CorpseTracker>();
         TotemDetector totemDetector = sp.GetRequiredService<TotemDetector>();
 
+        // Built here rather than taken from TrainerPlanner: the planner is a session
+        // scoped goal component and this factory runs from the root provider while the
+        // profile is still loading, before that scope exists. Both read the same rule
+        // out of TrainerSpells, so they cannot drift.
+        int[][] trainWhitelist = TrainerSpells.BuildWhitelist(classConfig);
+        SpellDB spellDB = sp.GetRequiredService<SpellDB>();
+
         var playerBuff = sp.GetRequiredService<AuraTimeReader<IPlayerBuffTimeReader>>();
         var playerDebuff = sp.GetRequiredService<AuraTimeReader<IPlayerDebuffTimeReader>>();
         var targetDebuff = sp.GetRequiredService<AuraTimeReader<ITargetDebuffTimeReader>>();
@@ -119,12 +120,6 @@ public sealed partial class RequirementFactory
 
         Dictionary<string, Func<ReadOnlySpan<char>, Requirement>> requirementMap = new()
         {
-            { greaterThenOrEqual, CreateGreaterOrEquals },
-            { lessThenOrEqual, CreateLesserOrEquals },
-            { greaterThen, CreateGreaterThen },
-            { lessThen, CreateLesserThen },
-            { equals, CreateEquals },
-            { modulo, CreateModulo },
             { "npcID:", CreateNpcId },
             { "BagItem:", CreateBagItem },
             { "SpellInRange:", CreateSpellInRange },
@@ -133,6 +128,7 @@ public sealed partial class RequirementFactory
             { "Race", CreateRace },
             { "PartyRole", CreatePartyRole },
             { "Equipment:", CreateEquipment },
+            { "RangedWeapon:", CreateRangedWeapon },
             { "Spell:", CreateSpell },
             { "Talent", CreateTalent },
             { "Trigger:", CreateTrigger },
@@ -170,6 +166,7 @@ public sealed partial class RequirementFactory
             { "Has Pet", bits.Pet },
             { "Pet Happy", bits.Pet_Happy },
             { "Pet HasTarget", playerReader.PetTarget },
+            { "PetCanPull", bits.Pet_CanPull },
             { "Mounted", bits.Mounted },
             
             // Auto Spell
@@ -188,6 +185,13 @@ public sealed partial class RequirementFactory
             { "BagGreyItem", bagReader.AnyGreyItem },
             { "HasRangedWeapon", equipmentReader.RangedWeapon },
             { "HasAmmo", bits.Ammo },
+
+            // Class trainer - false once there is nothing left to learn, so a
+            // ClassTrainer NPC entry stops asking. The goal additionally declines to
+            // run when a visit would be pointless for a reason only it can see, such
+            // as not affording the price the trainer quoted.
+            { "HasTrainableSpell", () => TrainerSpells.Any(
+                trainWhitelist, spellBookReader, spellDB, playerReader.Level.Value) },
 
             { "Casting", playerReader.IsCasting },
             { "HasTarget", bits.Target },
@@ -251,6 +255,9 @@ public sealed partial class RequirementFactory
             { "Energy", playerReader.PTCurrent },
             { "Rage", playerReader.PTCurrent },
             { "RunicPower", playerReader.PTCurrent },
+            // Hunter primary resource from MoP on. Distinct from FocusHealth% and
+            // the F_ aura prefix, which are about the focus unit, not a resource.
+            { "Focus", playerReader.PTCurrent },
             { "BloodRune", playerReader.BloodRune },
             { "FrostRune", playerReader.FrostRune },
             { "UnholyRune", playerReader.UnholyRune },
@@ -258,6 +265,10 @@ public sealed partial class RequirementFactory
             { "Combo Point", playerReader.ComboPoints },
             { "Holy Power", playerReader.ComboPoints },
             { "Durability%", playerReader.AvgEquipDurability },
+            { "MainHandDurability%", playerReader.MainHandDurability },
+            { "OffHandDurability%", playerReader.OffHandDurability },
+            { "RangedDurability%", playerReader.RangedDurability },
+            { "WeaponDurability%", playerReader.MinWeaponDurability },
             { "BagCount", bagReader.BagItemCount },
             { "FoodCount", bagReader.FoodItemCount },
             { "DrinkCount", bagReader.DrinkItemCount },
@@ -267,6 +278,7 @@ public sealed partial class RequirementFactory
             { "LastAutoShotMs", playerReader.AutoShot.ElapsedMs },
             { "LastMainHandMs", playerReader.MainHandSwing.ElapsedMs },
             { "LastTargetDodgeMs", LastTargetDodgeMs },
+            { "SinceDamageTakenMs", playerReader.SinceDamageTakenMs },
             //"CD"
             //"CD_{KeyAction.Name}
             //"Cost"
@@ -292,15 +304,29 @@ public sealed partial class RequirementFactory
             { "SessionHours", sessionStat._Hours },
 
             { "PartyRole", () => (int)classConfig.Party.Role },
+            // NPC visit history. Elapsed seconds rather than another "recently" flag, so
+            // a profile picks its own window and nothing has to clear anything.
+            // int.MaxValue until the event happens, so a "has it been a while" test is
+            // true from the start.
+            { "SecondsSinceVendored", sessionStat._SecondsSinceVendored },
+            { "SecondsSinceTrained", sessionStat._SecondsSinceTrained },
+            { "SpellsTrained", sessionStat._SpellsTrained },
 
             { "Level", playerReader.Level._Value },
             { "ExpPerc", playerReader._PlayerXpPercent },
             { "UIMapId", playerReader.UIMapId._Value },
 
+            // Copper, the unit every cost in the game is quoted in.
+            { "Money", playerReader.Money._Value },
+            { "Gold", () => playerReader.Money.Value / 10000 },
+
             { "SpellQueueWindow", playerReader._SpellQueueTimeMs },
             { "-SpellQueueWindow", playerReader._SpellQueueTimeMsNegative },
             { "BowReload", () => -(playerReader.NetworkLatency + 500) }
         };
+
+        expressionParser = new ExpressionParser(
+            intVariables, this.boolVariables, this.requirementMap, logger);
 
         BindPathSettingsIntVariables(classConfig.Paths);
 
@@ -430,45 +456,15 @@ public sealed partial class RequirementFactory
     {
         foreach (string requirement in CollectionsMarshal.AsSpan(requirements))
         {
-            List<string> expressions = InfixToPostfix.Convert(requirement);
-            Stack<Requirement> stack = new();
-            foreach (ReadOnlySpan<char> expr in CollectionsMarshal.AsSpan(expressions))
-            {
-                if (expr.Contains(SymbolAndChar))
-                {
-                    Requirement a = stack.Pop();
-                    Requirement b = stack.Pop();
-                    b.And(a);
+            if (logger.IsEnabled(LogLevel.Information))
+                LogProcessing(logger, name, requirement);
 
-                    stack.Push(b);
-                }
-                else if (expr.Contains(SymbolOrChar))
-                {
-                    Requirement a = stack.Pop();
-                    Requirement b = stack.Pop();
-                    b.Or(a);
-
-                    stack.Push(b);
-                }
-                else
-                {
-                    ReadOnlySpan<char> trim = expr.Trim();
-                    if (trim.IsEmpty)
-                    {
-                        continue;
-                    }
-
-                    if (logger.IsEnabled(LogLevel.Information))
-                        LogProcessing(logger, name, trim.ToString());
-                    stack.Push(CreateRequirement(trim));
-                }
-            }
-            output.Add(stack.Pop());
+            output.Add(expressionParser.Parse(requirement));
         }
     }
 
     public void InitUserDefinedIntVariables(
-        Dictionary<string, int> intKeyValues,
+        Dictionary<string, int[]> intKeyValues,
         Dictionary<string, string> stringKeyValues,
         AuraTimeReader<IPlayerBuffTimeReader> playerBuffTimeReader,
         AuraTimeReader<IPlayerDebuffTimeReader> playerDebuffTimeReader,
@@ -476,42 +472,89 @@ public sealed partial class RequirementFactory
         AuraTimeReader<ITargetBuffTimeReader> targetBuffTimeReader,
         AuraTimeReader<IFocusBuffTimeReader> focusBuffTimeReader)
     {
-        foreach ((string key, int value) in intKeyValues)
+        intArrayVariables = intKeyValues;
+
+        foreach ((string key, int[] values) in intKeyValues)
         {
-            int f() => value;
+            if (values.Length == 1)
+            {
+                int value = values[0];
+                int f() => value;
 
-            if (!intVariables.TryAdd(key, f))
-            {
-                throw new Exception($"Unable to add user defined variable to values. [{key} -> {value}]");
-            }
+                if (!intVariables.TryAdd(key, f))
+                {
+                    throw new Exception($"Unable to add user defined variable to values. [{key} -> {value}]");
+                }
 
-            if (key.StartsWith("Buff_", StringComparison.InvariantCultureIgnoreCase))
-            {
-                int l() => playerBuffTimeReader.GetRemainingTimeMs(value);
-                intVariables.TryAdd($"{value}", l);
-            }
-            else if (key.StartsWith("Debuff_", StringComparison.InvariantCultureIgnoreCase))
-            {
-                int l() => playerDebuffTimeReader.GetRemainingTimeMs(value);
-                intVariables.TryAdd($"{value}", l);
-            }
-            else if (key.StartsWith("TDebuff_", StringComparison.InvariantCultureIgnoreCase))
-            {
-                int l() => targetDebuffTimeReader.GetRemainingTimeMs(value);
-                intVariables.TryAdd($"{value}", l);
-            }
-            else if (key.StartsWith("TBuff_", StringComparison.InvariantCultureIgnoreCase))
-            {
-                int l() => targetBuffTimeReader.GetRemainingTimeMs(value);
-                intVariables.TryAdd($"{value}", l);
-            }
-            else if (key.StartsWith("FBuff_", StringComparison.InvariantCultureIgnoreCase))
-            {
-                int l() => focusBuffTimeReader.GetRemainingTimeMs(value);
-                intVariables.TryAdd($"{value}", l);
-            }
+                if (key.StartsWith("Buff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    int l() => playerBuffTimeReader.GetRemainingTimeMs(value);
+                    intVariables.TryAdd($"{value}", l);
+                }
+                else if (key.StartsWith("Debuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    int l() => playerDebuffTimeReader.GetRemainingTimeMs(value);
+                    intVariables.TryAdd($"{value}", l);
+                }
+                else if (key.StartsWith("TDebuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    int l() => targetDebuffTimeReader.GetRemainingTimeMs(value);
+                    intVariables.TryAdd($"{value}", l);
+                }
+                else if (key.StartsWith("TBuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    int l() => targetBuffTimeReader.GetRemainingTimeMs(value);
+                    intVariables.TryAdd($"{value}", l);
+                }
+                else if (key.StartsWith("FBuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    int l() => focusBuffTimeReader.GetRemainingTimeMs(value);
+                    intVariables.TryAdd($"{value}", l);
+                }
 
-            LogUserDefinedValue(logger, nameof(RequirementFactory), key, value);
+                LogUserDefinedValue(logger, nameof(RequirementFactory), key, value);
+            }
+            else
+            {
+                // Array case: register the variable as max remaining time across all IDs
+                if (key.StartsWith("Buff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    RegisterArrayAura(key, values, playerBuffTimeReader);
+                }
+                else if (key.StartsWith("Debuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    RegisterArrayAura(key, values, playerDebuffTimeReader);
+                }
+                else if (key.StartsWith("TDebuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    RegisterArrayAura(key, values, targetDebuffTimeReader);
+                }
+                else if (key.StartsWith("TBuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    RegisterArrayAura(key, values, targetBuffTimeReader);
+                }
+                else if (key.StartsWith("FBuff_", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    RegisterArrayAura(key, values, focusBuffTimeReader);
+                }
+                else
+                {
+                    // Non-aura array: use first element as the value
+                    int value = values[0];
+                    int f() => value;
+
+                    if (!intVariables.TryAdd(key, f))
+                    {
+                        throw new Exception($"Unable to add user defined variable to values. [{key} -> [{string.Join(", ", values)}]]");
+                    }
+                }
+
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    string joined = string.Join(", ", values);
+                    LogUserDefinedArrayValue(logger, nameof(RequirementFactory), key, joined);
+                }
+            }
         }
 
         foreach ((string key, string value) in stringKeyValues)
@@ -536,6 +579,36 @@ public sealed partial class RequirementFactory
             }
 
             stringVariables[key] = valueOrAlias;
+        }
+    }
+
+    private void RegisterArrayAura<T>(string key, int[] values,
+        AuraTimeReader<T> reader) where T : notnull
+    {
+        int[] captured = values;
+        int maxRemaining()
+        {
+            int max = 0;
+            for (int i = 0; i < captured.Length; i++)
+            {
+                int remaining = reader.GetRemainingTimeMs(captured[i]);
+                if (remaining > max)
+                    max = remaining;
+            }
+            return max;
+        }
+
+        if (!intVariables.TryAdd(key, maxRemaining))
+        {
+            throw new Exception($"Unable to add user defined variable to values. [{key} -> [{string.Join(", ", values)}]]");
+        }
+
+        // Also register each individual texture ID
+        for (int i = 0; i < captured.Length; i++)
+        {
+            int id = captured[i];
+            int l() => reader.GetRemainingTimeMs(id);
+            intVariables.TryAdd($"{id}", l);
         }
     }
 
@@ -632,7 +705,7 @@ public sealed partial class RequirementFactory
                 return false;
 
             // Must have at least 30 copper to pay mail fee
-            if (playerReader.Money < MailGoal.MIN_MAIL_FEE)
+            if (playerReader.Money.Value < MailGoal.MIN_MAIL_FEE)
                 return false;
 
             return bagReader.HasMailableItems(mail.MinimumItemQuality, classConfig.GetEffectiveExcludedItemIdSet());
@@ -653,7 +726,7 @@ public sealed partial class RequirementFactory
 
             // Must have more than threshold + fee to have any excess after fees
             // (30 copper minimum fee, even for gold-only mail)
-            return playerReader.Money > mail.MinimumGoldToKeep + MailGoal.MIN_MAIL_FEE;
+            return playerReader.Money.Value > mail.MinimumGoldToKeep + MailGoal.MIN_MAIL_FEE;
         }
         boolVariables.TryAdd(HasExcessGold, _HasExcessGold);
 
@@ -734,7 +807,7 @@ public sealed partial class RequirementFactory
         {
             if (!classConfig.Form.Get(keyAction.FormValue, out KeyAction? form))
                 throw new ArgumentNullException(
-                    keyAction.FormValue.ToStringF(),
+                    keyAction.FormValue.ToString(),
                     $"Requires a {nameof(KeyAction)} " +
                     $"to be defined under {nameof(ClassConfiguration)}." +
                     $"{nameof(classConfig.Form)}.{nameof(KeyActions.Sequence)} with");
@@ -776,7 +849,7 @@ public sealed partial class RequirementFactory
                 {
                     ActionBarCost abc = costReader.Get(keyAction, index);
                     Func<int> func = PowerTypeDelegate(playerReader, abc.PowerType);
-                    return $"{abc.PowerType.ToStringF()} " +
+                    return $"{abc.PowerType.ToString()} " +
                         $"{func()} >= {abc.Cost}{(formCost() > 0 ? $"+{formCost()}" : "")}";
                 }
             }
@@ -795,7 +868,7 @@ public sealed partial class RequirementFactory
                 {
                     ActionBarCost abc = costReader.Get(keyAction, index);
                     Func<int> func = PowerTypeDelegate(playerReader, abc.PowerType);
-                    return $"{abc.PowerType.ToStringF()} {func()} >= {abc.Cost}";
+                    return $"{abc.PowerType.ToString()} {func()} >= {abc.Cost}";
                 }
             }
 
@@ -821,7 +894,7 @@ public sealed partial class RequirementFactory
         PowerType.HealthCost => playerReader.HealthCurrent,
         PowerType.HolyPower or
         PowerType.ComboPoints => playerReader.ComboPoints,
-        _ => throw new NotImplementedException($"{type.ToStringF()}"),
+        _ => throw new NotImplementedException($"{type.ToString()}"),
     };
 
     private void AddMinComboPoints(List<Requirement> list, KeyAction item,
@@ -889,61 +962,12 @@ public sealed partial class RequirementFactory
                 out SchoolMask immuneAgaints) ||
                 !immuneAgaints.HasValue(item.School);
 
-        string s() => item.School.ToStringF();
+        string s() => item.School.ToString();
         list.Add(new Requirement
         {
             HasRequirement = f,
             LogMessage = s
         });
-    }
-
-
-    public Requirement CreateRequirement(ReadOnlySpan<char> requirement)
-    {
-        int negateIndex = requirement.IndexOfAny(negateKeywordsSpan);
-        int negateLength = requirement.IndexOfAnyExcept(negateKeywordsSpan);
-
-        ReadOnlySpan<char> negated = negateIndex == -1
-            ? []
-            : requirement[..negateLength];
-
-        requirement = requirement[negateLength..];
-
-        string requirementStr = requirement.ToString();
-
-        string? key = requirementMap.Keys.FirstOrDefault(requirementStr.Contains);
-        if (!string.IsNullOrEmpty(key) && requirementMap.TryGetValue(key, out var createRequirement))
-        {
-            Requirement r = createRequirement(requirement);
-            if (!negated.IsEmpty)
-            {
-                r.Negate(negated);
-            }
-            return r;
-        }
-
-        var spanLookupBool = boolVariables.GetAlternateLookup<ReadOnlySpan<char>>();
-        if (!spanLookupBool.TryGetValue(requirement, out Func<bool>? value))
-        {
-            LogUnknown(logger, requirementStr, string.Join(", ", boolVariables.Keys));
-            return new Requirement
-            {
-                LogMessage = () => $"UNKNOWN REQUIREMENT! {requirementStr}"
-            };
-        }
-
-        string s() => requirementStr;
-        Requirement req = new()
-        {
-            HasRequirement = value,
-            LogMessage = s
-        };
-
-        if (!negated.IsEmpty)
-        {
-            req.Negate(negated);
-        }
-        return req;
     }
 
     private Requirement CreateActionUsable(KeyAction item,
@@ -972,7 +996,7 @@ public sealed partial class RequirementFactory
             !item.HasForm
             ? "Usable"
             : (playerReader.Form != item.FormValue && CanDoFormChange())
-            ? $"May Usable {item.FormValue.ToStringF()}"
+            ? $"May Usable {item.FormValue.ToString()}"
             : (playerReader.Form == item.FormValue && usableAction.Is(item))
             ? $"Usable in Form" : "Unusable";
 
@@ -1076,7 +1100,7 @@ public sealed partial class RequirementFactory
             Form form = Enum.Parse<Form>(requirement[(sep + 1)..], true);
 
             bool f() => playerReader.Form == form;
-            string s() => playerReader.Form.ToStringF();
+            string s() => playerReader.Form.ToString();
 
             return new Requirement
             {
@@ -1096,7 +1120,7 @@ public sealed partial class RequirementFactory
             UnitRace race = Enum.Parse<UnitRace>(requirement[(sep + 1)..], true);
 
             bool f() => playerReader.Race == race;
-            string s() => playerReader.Race.ToStringF();
+            string s() => playerReader.Race.ToString();
 
             return new Requirement
             {
@@ -1136,7 +1160,7 @@ public sealed partial class RequirementFactory
                 creatureDb.Entries.TryGetValue(playerReader.TargetId, out Creature c)
                 && c.Type == type;
 
-            string s() => type.ToStringF();
+            string s() => type.ToString();
 
             return new Requirement
             {
@@ -1160,7 +1184,7 @@ public sealed partial class RequirementFactory
                 creatureDb.Entries.TryGetValue(playerReader.MouseOverId, out Creature c)
                 && c.Type == type;
 
-            string s() => type.ToStringF();
+            string s() => type.ToString();
 
             return new Requirement
             {
@@ -1168,6 +1192,48 @@ public sealed partial class RequirementFactory
                 LogMessage = s
             };
         }
+    }
+
+    /// <summary>
+    /// True when the equipped ranged weapon is of the named
+    /// <see cref="SharedLib.Data.ItemWeaponSubclass"/> - 'RangedWeapon:Bow'.
+    ///
+    /// <para>Exists so a profile can tell arrows from bullets. A hunter runs dry and has
+    /// to restock, but which ammo to buy depends on whether the ranged slot holds a bow, a
+    /// crossbow or a gun, and nothing in the expression language could see that - so an
+    /// ammo-vendor entry had to hardcode one item id and was wrong for half of them.</para>
+    /// </summary>
+    private Requirement CreateRangedWeapon(ReadOnlySpan<char> requirement)
+    {
+        // 'RangedWeapon:_SUBCLASS_'
+        int sep = requirement.IndexOf(SEP1);
+        ReadOnlySpan<char> name = requirement[(sep + 1)..].Trim();
+
+        if (!Enum.TryParse(name, true, out ItemWeaponSubclass want))
+        {
+            throw new InvalidOperationException(
+                $"'{requirement}' - '{name}' is not a known {nameof(ItemWeaponSubclass)}. " +
+                $"Expected one of: {string.Join(", ", Enum.GetNames<ItemWeaponSubclass>())}");
+        }
+
+        ItemWeaponSubclass captured = want;
+
+        bool f()
+        {
+            int id = equipmentReader.GetId((int)InventorySlotId.Ranged);
+            return id != 0 &&
+                itemDb.Items.TryGetValue(id, out Item item) &&
+                item.ClassId == ItemClass.Weapon &&
+                item.SubclassId == (int)captured;
+        }
+
+        string s() => $"RangedWeapon {captured}";
+
+        return new Requirement
+        {
+            HasRequirement = f,
+            LogMessage = s
+        };
     }
 
     private Requirement CreateEquipment(ReadOnlySpan<char> requirement)
@@ -1199,8 +1265,8 @@ public sealed partial class RequirementFactory
                 : equipmentReader.GetId((int)slot) == itemId;
 
             string s() => itemId == 0
-                ? $"Equipment {slot.ToStringF()}"
-                : $"Equipment {slot.ToStringF()}:{itemId}";
+                ? $"Equipment {slot.ToString()}"
+                : $"Equipment {slot.ToString()}:{itemId}";
 
             return new Requirement
             {
@@ -1212,14 +1278,38 @@ public sealed partial class RequirementFactory
 
     private Requirement CreateSpell(ReadOnlySpan<char> requirement)
     {
-        return create(requirement, spellBookReader, intVariables);
-        static Requirement create(ReadOnlySpan<char> requirement, SpellBookReader spellBookReader, Dictionary<string, Func<int>> intVariables)
-        {
-            // 'Spell:_NAME_OR_ID_'
-            int sep = requirement.IndexOf(SEP1);
-            string name = requirement[(sep + 1)..].Trim().ToString();
+        // 'Spell:_NAME_OR_INTVARIABLE_OR_ID_'
+        int sep = requirement.IndexOf(SEP1);
+        string name = requirement[(sep + 1)..].Trim().ToString();
 
-            // variable
+        // Array variable: true if ANY spell in the array is known
+        if (intArrayVariables.TryGetValue(name, out int[]? ids) && ids.Length > 1)
+        {
+            int[] captured = ids;
+
+            bool f()
+            {
+                for (int i = 0; i < captured.Length; i++)
+                {
+                    if (spellBookReader.Has(captured[i]))
+                        return true;
+                }
+                return false;
+            }
+
+            string s() => $"Spell {name}[{captured.Length}]";
+
+            return new Requirement
+            {
+                HasRequirement = f,
+                LogMessage = s
+            };
+        }
+
+        // Single value: variable, literal ID, or spell name
+        return createSingle(name, spellBookReader, intVariables);
+        static Requirement createSingle(string name, SpellBookReader spellBookReader, Dictionary<string, Func<int>> intVariables)
+        {
             var spanLookup = intVariables.GetAlternateLookup<ReadOnlySpan<char>>();
             if (spanLookup.TryGetValue(name, out Func<int>? idFunc))
             {
@@ -1314,13 +1404,40 @@ public sealed partial class RequirementFactory
 
     private Requirement CreateNpcId(ReadOnlySpan<char> requirement)
     {
-        return create(requirement, playerReader, intVariables, creatureDb);
-        static Requirement create(ReadOnlySpan<char> requirement, PlayerReader playerReader,
+        // 'npcID:_ID_OR_INTVARIABLE_RANGE_'
+        int sep = requirement.IndexOf(SEP1);
+        string name_or_id = requirement[(sep + 1)..].Trim().ToString();
+
+        // Array variable: true if target matches ANY NPC ID in the array
+        if (intArrayVariables.TryGetValue(name_or_id, out int[]? ids) && ids.Length > 1)
+        {
+            int[] captured = ids;
+
+            bool f()
+            {
+                int targetId = playerReader.TargetId;
+                for (int i = 0; i < captured.Length; i++)
+                {
+                    if (targetId == captured[i])
+                        return true;
+                }
+                return false;
+            }
+
+            string s() => $"TargetID {name_or_id}[{captured.Length}]";
+
+            return new Requirement
+            {
+                HasRequirement = f,
+                LogMessage = s
+            };
+        }
+
+        // Single value case
+        return createSingle(name_or_id, playerReader, intVariables, creatureDb);
+        static Requirement createSingle(string name_or_id, PlayerReader playerReader,
             Dictionary<string, Func<int>> intVariables, CreatureDB creatureDb)
         {
-            // 'npcID:_ID_OR_INTVARIABLE_'
-            int sep = requirement.IndexOf(SEP1);
-            ReadOnlySpan<char> name_or_id = requirement[(sep + 1)..];
             int npcId = GetIntValueOrVariable(intVariables, name_or_id);
             string npcName = string.Empty;
 
@@ -1342,27 +1459,53 @@ public sealed partial class RequirementFactory
 
     private Requirement CreateBagItem(ReadOnlySpan<char> requirement)
     {
-        return create(requirement, bagReader, intVariables, itemDb);
-        static Requirement create(ReadOnlySpan<char> requirement, BagReader bagReader,
+        // 'BagItem:_ID_OR_INTVARIABLE_RANGE_?:_COUNT_OR_INTVARIABLE_'
+        int firstSep = requirement.IndexOf(SEP1);
+        int lastSep = requirement.LastIndexOf(SEP1);
+
+        int count = 1;
+        if (firstSep != lastSep)
+        {
+            var count_or_variable = requirement[(lastSep + 1)..];
+            count = GetIntValueOrVariable(intVariables, count_or_variable);
+        }
+        else
+        {
+            lastSep = requirement.Length;
+        }
+
+        string name_or_id = requirement[(firstSep + 1)..lastSep].Trim().ToString();
+
+        // Array variable: sum item counts across all IDs
+        if (intArrayVariables.TryGetValue(name_or_id, out int[]? ids) && ids.Length > 1)
+        {
+            int[] captured = ids;
+            int capturedCount = count;
+
+            bool f()
+            {
+                int total = 0;
+                for (int i = 0; i < captured.Length; i++)
+                    total += bagReader.ItemCount(captured[i]);
+                return total >= capturedCount;
+            }
+
+            string s() => capturedCount == 1
+                ? $"in bag {name_or_id}[{captured.Length}]"
+                : $"{name_or_id}[{captured.Length}] count >= {capturedCount}";
+
+            return new Requirement
+            {
+                HasRequirement = f,
+                LogMessage = s
+            };
+        }
+
+        // Single value case
+        return createSingle(name_or_id, count, bagReader, intVariables, itemDb);
+        static Requirement createSingle(string name_or_id, int count, BagReader bagReader,
             Dictionary<string, Func<int>> intVariables, ItemDB itemDb)
         {
-            // 'BagItem:_ID_OR_INTVARIABLE_?:_COUNT_OR_INTVARIABLE_'
-            int firstSep = requirement.IndexOf(SEP1);
-            int lastSep = requirement.LastIndexOf(SEP1);
-
-            int count = 1;
-            if (firstSep != lastSep)
-            {
-                var count_or_variable = requirement[(lastSep + 1)..];
-                count = GetIntValueOrVariable(intVariables, count_or_variable);
-            }
-            else
-            {
-                lastSep = requirement.Length;
-            }
-
-            ReadOnlySpan<char> name_or_id = requirement[(firstSep + 1)..lastSep];
-
             int itemId = GetIntValueOrVariable(intVariables, name_or_id);
 
             string itemName = string.Empty;
@@ -1451,107 +1594,6 @@ public sealed partial class RequirementFactory
             $"related named '{name}' {nameof(KeyAction)} not found!");
     }
 
-
-    private Requirement CreateGreaterThen(ReadOnlySpan<char> requirement)
-    {
-        return CreateArithmetic(greaterThen, requirement, intVariables);
-    }
-
-    private Requirement CreateLesserThen(ReadOnlySpan<char> requirement)
-    {
-        return CreateArithmetic(lessThen, requirement, intVariables);
-    }
-
-    private Requirement CreateGreaterOrEquals(ReadOnlySpan<char> requirement)
-    {
-        return CreateArithmetic(greaterThenOrEqual, requirement, intVariables);
-    }
-
-    private Requirement CreateLesserOrEquals(ReadOnlySpan<char> requirement)
-    {
-        return CreateArithmetic(lessThenOrEqual, requirement, intVariables);
-    }
-
-    private Requirement CreateEquals(ReadOnlySpan<char> requirement)
-    {
-        return CreateArithmetic(equals, requirement, intVariables);
-    }
-
-    private Requirement CreateModulo(ReadOnlySpan<char> requirement)
-    {
-        return CreateArithmetic(modulo, requirement, intVariables);
-    }
-
-    private Requirement CreateArithmetic(ReadOnlySpan<char> symbol, ReadOnlySpan<char> requirement,
-        Dictionary<string, Func<int>> intVariables)
-    {
-        int sep = requirement.IndexOf(symbol);
-
-        ReadOnlySpan<char> key = requirement[..sep].Trim();
-        ReadOnlySpan<char> varOrConst = requirement[(sep + symbol.Length)..];
-
-        var spanLookup = intVariables.GetAlternateLookup<ReadOnlySpan<char>>();
-        if (!spanLookup.TryGetValue(key, out Func<int>? aliasOrKey))
-        {
-            LogUnknown(logger, requirement.ToString(), string.Join(", ", intVariables.Keys));
-            throw new ArgumentOutOfRangeException(requirement.ToString());
-        }
-
-        string aliasKey = aliasOrKey().ToString();
-        Func<int> lValue = aliasOrKey;
-        if (intVariables.TryGetValue(aliasKey, out Func<int>? currentVal))
-        {
-            lValue = currentVal;
-        }
-
-        string varOrConstName = "";
-        Func<int> rValue;
-        if (int.TryParse(varOrConst, out int constValue))
-        {
-            int _constValue() => constValue;
-            rValue = _constValue;
-        }
-        else
-        {
-            varOrConstName = varOrConst.Trim().ToString();
-            rValue = intVariables.TryGetValue(varOrConstName, out Func<int>? v)
-                ? v
-                : throw new ArgumentOutOfRangeException(varOrConstName);
-        }
-
-        if (!string.IsNullOrEmpty(varOrConstName))
-            varOrConstName += " ";
-
-        string display = key.ToString();
-        string displaySymbol = symbol.ToString();
-
-        string msg() => $"{display} {lValue()} {displaySymbol} {varOrConstName}{rValue()}";
-        switch (symbol)
-        {
-            case modulo:
-                bool m() => lValue() % rValue() == 0;
-                return new Requirement { HasRequirement = m, LogMessage = msg };
-            case equals:
-                bool e() => lValue() == rValue();
-                return new Requirement { HasRequirement = e, LogMessage = msg };
-            case greaterThen:
-                bool g() => lValue() > rValue();
-                return new Requirement { HasRequirement = g, LogMessage = msg };
-            case lessThen:
-                bool l() => lValue() < rValue();
-                return new Requirement { HasRequirement = l, LogMessage = msg };
-            case greaterThenOrEqual:
-                bool ge() => lValue() >= rValue();
-                return new Requirement { HasRequirement = ge, LogMessage = msg };
-            case lessThenOrEqual:
-                bool le() => lValue() <= rValue();
-                return new Requirement { HasRequirement = le, LogMessage = msg };
-            default:
-                throw new ArgumentOutOfRangeException(requirement.ToString());
-        }
-        ;
-    }
-
     private static int GetIntValueOrVariable(Dictionary<string, Func<int>> intVariables, ReadOnlySpan<char> count_or_variable)
     {
         var spanLookup = intVariables.GetAlternateLookup<ReadOnlySpan<char>>();
@@ -1567,6 +1609,12 @@ public sealed partial class RequirementFactory
         Level = LogLevel.Information,
         Message = "[{typeName}] Defined int variable [{key} -> {value}]")]
     static partial void LogUserDefinedValue(ILogger logger, string typeName, string key, int value);
+
+    [LoggerMessage(
+        EventId = 0020,
+        Level = LogLevel.Information,
+        Message = "[{typeName}] Defined int array variable [{key} -> [{values}]]")]
+    static partial void LogUserDefinedArrayValue(ILogger logger, string typeName, string key, string values);
 
     [LoggerMessage(
         EventId = 0018,

@@ -31,6 +31,8 @@ public sealed class PullTargetGoal : GoapGoal, IGoapEventListener
     private readonly IMountHandler mountHandler;
     private readonly CombatTracker combatTracker;
     private readonly IBlacklist targetBlacklist;
+    private readonly ApproachThrottle approachThrottle;
+    private readonly ActionBarCastTimeReader castTimeReader;
 
     private readonly KeyAction? approachKey;
     private readonly Action approachAction;
@@ -48,7 +50,8 @@ public sealed class PullTargetGoal : GoapGoal, IGoapEventListener
         StopMoving stopMoving, CastingHandler castingHandler,
         IMountHandler mountHandler, NpcNameTargeting npcNameTargeting,
         StuckDetector stuckDetector, CombatTracker combatTracker,
-        ClassConfiguration classConfig)
+        ClassConfiguration classConfig, ApproachThrottle approachThrottle,
+        ActionBarCastTimeReader castTimeReader)
         : base(nameof(PullTargetGoal))
     {
         this.logger = logger;
@@ -65,6 +68,8 @@ public sealed class PullTargetGoal : GoapGoal, IGoapEventListener
         this.combatTracker = combatTracker;
         this.targetBlacklist = targetBlacklist;
         this.classConfig = classConfig;
+        this.approachThrottle = approachThrottle;
+        this.castTimeReader = castTimeReader;
 
         Keys = classConfig.Pull.Sequence;
 
@@ -102,20 +107,19 @@ public sealed class PullTargetGoal : GoapGoal, IGoapEventListener
     {
         wait.Update();
         stuckDetector.Reset();
+        approachThrottle.Reset();
 
         if (mountHandler.IsMounted())
         {
             mountHandler.Dismount();
         }
 
-        if (Keys.Length != 0 && !input.StopAttack.OnCooldown())
+        if (!input.StopAttack.OnCooldown() && RequiresStandingStill())
         {
-            Log("Stop auto interact!");
             input.PressStopAttack();
-            wait.Update();
-            stopMoving.StopForward();
-            wait.Update(playerReader.DoubleNetworkLatency);
-            wait.Update();
+            stopMoving.Stop();
+            float stopElapsedMs = wait.Until(CastingHandler.SPELL_QUEUE_HALF, bits.NotMoving);
+            Log($"Stop auto interact {stopElapsedMs}ms!");
         }
 
         if (requiresNpcNameFinder)
@@ -230,16 +234,30 @@ public sealed class PullTargetGoal : GoapGoal, IGoapEventListener
 
     private void DefaultApproach()
     {
+        // Rate limiter for the whole method, not just the press: the stuck
+        // detector below jumps on every call until its ladder opens, and
+        // PressJump does not honour a cooldown of its own.
         if (input.Approach.OnCooldown())
+        {
             return;
+        }
 
-        if (!bits.SoftInteract() || EligibleEnemySoftTargetExists())
+        // Pull chases the target - only the profile's own Approach requirements
+        // stop it, so this passes no arrival condition. WithInCombatRange() was the
+        // wrong one: for a class whose combat range is a spell range - a Paladin's
+        // Judgement at 10 yards from level 4 - it reads as arrived while the
+        // character is still 10 yards out, so a melee pull never closes and the whole
+        // pull ends up gated on that spell's cooldown.
+        if (approachThrottle.ShouldPress() &&
+            (!bits.SoftInteract() || EligibleEnemySoftTargetExists()))
         {
             input.PressApproach();
             wait.Update();
+
+            approachThrottle.OnPressed();
         }
 
-        if (!stuckDetector.IsMoving())
+        if (!stuckDetector.IsMoving)
             stuckDetector.Update();
     }
 
@@ -253,6 +271,42 @@ public sealed class PullTargetGoal : GoapGoal, IGoapEventListener
         }
 
         DefaultApproach();
+    }
+
+    /// <summary>
+    /// Whether a pull key that can fire right now needs the player standing still -
+    /// a cast bar, or an explicit BeforeCastStop. Both are what a ranged opener
+    /// declares; a melee opener declares neither, because it opens with instants and
+    /// wants to keep the interact run it arrived on.
+    ///
+    /// <para>Stopping regardless cost the melee pull twice: the run has to be restarted
+    /// from a standstill, and the stop plus its NotMoving wait burns the window a
+    /// short-lived opener is waiting on - a Warrior sitting on Charge coming off
+    /// cooldown loses most of it here.</para>
+    /// </summary>
+    private bool RequiresStandingStill()
+    {
+        ReadOnlySpan<KeyAction> keys = Keys;
+        for (int i = 0; i < keys.Length; i++)
+        {
+            KeyAction keyAction = keys[i];
+
+            // Approach, AutoAttack, StopAttack - none of them cast anything.
+            if (keyAction.BaseAction)
+                continue;
+
+            // SlotIndex is 0 for a key with no action bar slot, so the reader would
+            // answer with slot 1's cast time - only ask it about a key that has one.
+            bool standStill =
+                keyAction.BeforeCastStop ||
+                keyAction.HasCastBar ||
+                (keyAction.Slot > 0 && castTimeReader.HasCastBar(keyAction));
+
+            if (standStill && keyAction.CanRun())
+                return true;
+        }
+
+        return false;
     }
 
     private bool PullPrevention()

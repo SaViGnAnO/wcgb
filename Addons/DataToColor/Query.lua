@@ -28,10 +28,8 @@ local UnitGUID = UnitGUID
 
 local GetActionInfo = GetActionInfo
 local GetMacroSpell = GetMacroSpell
-local GetSpellPowerCost = GetSpellPowerCost or function(spellID)
-    local cost, powerType = select(4, GetSpellInfo(spellID)), select(5, GetSpellInfo(spellID))
-    return { cost = cost, powerType = powerType }
-end
+local GetSpellPowerCost = DataToColor.GetSpellPowerCost
+local GetSpellCastTime = DataToColor.GetSpellCastTime
 local GetSpellBaseCooldown = GetSpellBaseCooldown
 local GetInventoryItemLink = GetInventoryItemLink
 local IsSpellInRange = IsSpellInRange
@@ -63,6 +61,8 @@ local SpellBookFrame = SpellBookFrame
 local FriendsFrame = FriendsFrame
 
 local HasPetUI = HasPetUI
+local GetPetActionInfo = GetPetActionInfo
+local UnitPower = UnitPower
 
 -- bits
 
@@ -72,18 +72,7 @@ local UnitIsDead = UnitIsDead
 local UnitIsPlayer = UnitIsPlayer
 local UnitName = UnitName
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
-local UnitCharacterPoints = UnitCharacterPoints or function(unit)
-  if not UnitExists(unit) then
-    return 0
-  end
-  if UnitIsUnit(unit, "pet") then
-    return GetUnspentTalentPoints(false, true)
-  elseif UnitIsUnit(unit, "player") then
-    return GetUnspentTalentPoints(false)
-  else
-    return 0
-  end
-end
+local UnitCharacterPoints = UnitCharacterPoints
 local UnitPlayerControlled = UnitPlayerControlled
 local GetShapeshiftForm = GetShapeshiftForm
 local GetShapeshiftFormInfo = GetShapeshiftFormInfo
@@ -212,7 +201,119 @@ function DataToColor:Bits3()
         (DataToColor:AnyBagOpen() and 2 or 0) ^ 12 +
         (DataToColor:CharacterFrameOpen() and 2 or 0) ^ 13 +
         (DataToColor:SpellBookFrameOpen() and 2 or 0) ^ 14 +
-        (DataToColor:FriendsFrameOpen() and 2 or 0) ^ 15
+        (DataToColor:FriendsFrameOpen() and 2 or 0) ^ 15 +
+        (DataToColor:TrainerFrameShown() and 2 or 0) ^ 16 +
+        (MerchantFrame:IsShown() and 2 or 0) ^ 17 +
+        (DataToColor:PetCanPull() and 2 or 0) ^ 18
+end
+
+-- Mode and command buttons are PET_MODE_* / PET_ACTION_* tokens. The name is the
+-- only GetPetActionInfo field at the same position on both layouts.
+local PET_TOKEN_PATTERN = "^PET_"
+local NUM_PET_ACTION_SLOTS = 10
+
+------------------------------------------------------------
+-- GetPetActionInfo return layout - both shapes are seven values, so the count
+-- cannot tell them apart and the client generation has to.
+--   Legacy 4.3.4 / 5.4.8:
+--     name, subtext, texture, isToken, isActive, autoCastAllowed, autoCastEnabled
+--   Modern Classic:
+--     name, texture, isToken, isActive, autoCastAllowed, autoCastEnabled, spellID
+------------------------------------------------------------
+-- Legacy has no spellID return at all, so its cost is looked up by name instead.
+local PET_SPELL_ID_INDEX = DataToColor.IsLegacy() and 0 or 7
+
+--- Power cost of the spell in a pet action slot, or nil when the slot holds
+--- nothing the pet spends power to cast.
+---
+--- Cost is the discriminator. Both obvious alternatives were measured on 3.4.x
+--- and both are dead: GetPetActionSlotUsable answers true for every slot,
+--- PET_ACTION_FOLLOW included, and stays true for Firebolt while the Imp is far
+--- too dry to cast it, so it says nothing about power. autoCastAllowed does not
+--- separate them either - Blood Pact (6307) reports it exactly like Firebolt
+--- (3110) does. What actually differs is that Blood Pact is free.
+---
+--- @return number|nil cost, number powerType
+function DataToColor:GetPetActionSpellCost(index)
+    local name, _, _, _, _, _, spellID = GetPetActionInfo(index)
+    if not name or find(name, PET_TOKEN_PATTERN) then
+        return nil
+    end
+
+    local costs
+    if PET_SPELL_ID_INDEX ~= 0 and spellID then
+        costs = DataToColor.GetSpellPowerCost(spellID)
+    else
+        -- name, rank, icon, cost, isFunnel, powerType, ... - the long layout,
+        -- which is the only one a client without a spellID return has.
+        local cost, _, powerType = select(4, GetSpellInfo(name))
+        if cost then
+            costs = { { cost = cost, type = powerType or 0 } }
+        end
+    end
+
+    if not costs then
+        return nil
+    end
+
+    for i = 1, #costs do
+        local entry = costs[i]
+        if entry.cost and entry.cost > 0 then
+            return entry.cost, entry.type or 0
+        end
+    end
+
+    return nil
+end
+
+--- Whether the pet can start a fight on its own right now.
+---
+--- The case this exists for is the pet running out of power: an Imp with no mana
+--- left for Firebolt just stands where it is, it does not close to melee, so the
+--- pull silently never happens and the bot waits out its pull timer.
+--- See GetPetActionSpellCost for why the answer is built from power and cost
+--- rather than from anything the client offers about slot usability.
+---
+--- @param slots table|nil BitCache's pre-scanned { cost, type } entries
+--- @param count number|nil how many of them are valid
+function DataToColor:PetCanPull(slots, count)
+    local pet = DataToColor.C.unitPet
+
+    if not UnitIsVisible(pet) or UnitIsDead(pet) then
+        return false
+    end
+
+    if slots then
+        for i = 1, count do
+            local entry = slots[i]
+            if UnitPower(pet, entry.type) >= entry.cost then
+                return true
+            end
+        end
+
+        -- A pet with nothing costed to cast pulls by running in and meleeing.
+        return count == 0
+    end
+
+    local sawCosted = false
+
+    for i = 1, NUM_PET_ACTION_SLOTS do
+        local cost, powerType = DataToColor:GetPetActionSpellCost(i)
+        if cost then
+            sawCosted = true
+            if UnitPower(pet, powerType) >= cost then
+                return true
+            end
+        end
+    end
+
+    return not sawCosted
+end
+
+-- Blizzard_TrainerUI is loaded on demand, so the frame does not exist until the player
+-- has opened a trainer once - hence the existence check rather than a bare IsShown.
+function DataToColor:TrainerFrameShown()
+    return ClassTrainerFrame ~= nil and ClassTrainerFrame:IsShown()
 end
 
 function DataToColor:CustomTrigger(t)
@@ -349,6 +450,7 @@ function DataToColor:CastingInfoSpellId(unitId)
             DataToColor.lastCastStartTime = startTime
             DataToColor.lastCastEndTime = endTime
             DataToColor.CastNum = DataToColor.CastNum + 1
+            DataToColor.RebuildCastingActionCache(spellID)
         end
         return spellID
     end
@@ -359,12 +461,14 @@ function DataToColor:CastingInfoSpellId(unitId)
             DataToColor.lastCastStartTime = startTime
             DataToColor.lastCastEndTime = endTime
             DataToColor.CastNum = DataToColor.CastNum + 1
+            DataToColor.RebuildCastingActionCache(spellID)
         end
         return spellID
     end
 
     if unitId == DataToColor.C.unitPlayer then
         DataToColor.lastCastEndTime = 0
+        DataToColor.ClearCastingActionCache()
     end
 
     return 0
@@ -387,7 +491,9 @@ function DataToColor:populateActionbarCost(slot)
 
     local found = false
 
-    if id and actionType == DataToColor.C.ActionType.Spell or actionType == DataToColor.C.ActionType.Macro then
+    -- Parenthesised: without them `and` binds tighter and a macro whose body has
+    -- no spell (id nil) still entered the branch.
+    if id and (actionType == DataToColor.C.ActionType.Spell or actionType == DataToColor.C.ActionType.Macro) then
         local costTable = GetSpellPowerCost(id)
         if costTable then
             for order, costInfo in ipairs(costTable) do
@@ -405,6 +511,67 @@ function DataToColor:populateActionbarCost(slot)
     if found == false then
         DataToColor.actionBarCostQueue:set(100000 * slot + 10000 + offsetEnumPowerType, 0)
     end
+end
+
+-- Item-flag offset added to the cast-time component when the slot represents
+-- an item-like action (true items, macros wrapping items, auto-repeat
+-- shoot/wand/auto-shot). Lets the bot derive KeyAction.Item from the addon
+-- without a manual JSON setting. Cast time is clamped to 49999ms so the
+-- offset bit stays unambiguous.
+local CASTTIME_MAX = 49999
+local ITEM_FLAG_OFFSET = 50000
+
+function DataToColor:populateActionbarCastTime(slot)
+    local actionType, id = GetActionInfo(slot)
+    local castTime = 0
+    local isItem = false
+
+    if actionType == "spell" then
+        if id then
+            castTime = GetSpellCastTime(id)
+        end
+
+    elseif actionType == "item" then
+        -- Hearthstone (10s), Bandage (8s channeled), trinkets etc.
+        -- GetItemSpell(itemId) -> spellName, spellId of the item's Use: effect
+        isItem = true
+        if id then
+            local _, spellId = GetItemSpell(id)
+            if spellId then
+                castTime = GetSpellCastTime(spellId)
+            end
+        end
+
+    elseif actionType == "macro" then
+        local macroSpell = GetMacroSpell(id)
+        if macroSpell then
+            castTime = GetSpellCastTime(macroSpell)
+        else
+            local macroItemName = GetMacroItem(id)
+            if macroItemName then
+                isItem = true
+                local _, spellId = GetItemSpell(macroItemName)
+                if spellId then
+                    castTime = GetSpellCastTime(spellId)
+                end
+            end
+        end
+    end
+
+    -- Auto-repeat actions (Auto Shot for Hunter, Shoot for Wand) behave like
+    -- items in the bot's casting flow even though they're technically spells.
+    if not isItem and IsAutoRepeatAction and IsAutoRepeatAction(slot) then
+        isItem = true
+    end
+
+    if castTime > CASTTIME_MAX then
+        castTime = CASTTIME_MAX
+    end
+    if isItem then
+        castTime = castTime + ITEM_FLAG_OFFSET
+    end
+
+    DataToColor.actionBarCastTimeQueue:set(slot, castTime)
 end
 
 function DataToColor:equipSlotItemId(slot)
@@ -585,8 +752,51 @@ function DataToColor:isCurrentAction(min, max)
 end
 
 -- isCurrentAction cache (cells 25-29)
+local CURRENT_ACTION_CHUNK = 24
+
 local currentActionCache = { 0, 0, 0, 0, 0 }
 local currentActionDirty = true
+
+-- 5.4.8 reports IsCurrentAction false for a spell that is mid-cast, where the
+-- Classic re-releases report true. That bit is how the bot confirms a keypress
+-- landed, so every cast-time spell failed with CurrentActionNotDetected while
+-- instants - which resolve through CAST_SENT before the combat log overwrites
+-- it with CAST_START - kept working. Fold the casting slots in ourselves.
+local castingActionCache = { 0, 0, 0, 0, 0 }
+
+local function ClearCastingActionCache()
+    for i = 1, #castingActionCache do
+        castingActionCache[i] = 0
+    end
+end
+
+-- Every slot holding the spell, not just the first: the same spell can sit on
+-- several bars and the bot checks the slot it actually pressed.
+-- Called once per cast, off the transition CastingInfoSpellId already detects,
+-- never per frame.
+local function RebuildCastingActionCache(spellId)
+    ClearCastingActionCache()
+
+    if not spellId or spellId == 0 then
+        return
+    end
+
+    for slot = 1, DataToColor.C.MAX_ACTIONBAR_SLOT do
+        local actionType, id = GetActionInfo(slot)
+        if actionType == DataToColor.C.ActionType.Macro then
+            id = GetMacroSpell(id)
+        end
+
+        if id == spellId then
+            local chunk = floor((slot - 1) / CURRENT_ACTION_CHUNK) + 1
+            local offset = slot - 1 - ((chunk - 1) * CURRENT_ACTION_CHUNK)
+            castingActionCache[chunk] = castingActionCache[chunk] + (2 ^ offset)
+        end
+    end
+end
+
+DataToColor.RebuildCastingActionCache = RebuildCastingActionCache
+DataToColor.ClearCastingActionCache = ClearCastingActionCache
 
 local function RebuildCurrentActionCache()
     currentActionCache[1] = DataToColor:isCurrentAction(1, 24)
@@ -601,7 +811,17 @@ function DataToColor:isCurrentActionCached(chunk)
     if currentActionDirty then
         RebuildCurrentActionCache()
     end
-    return currentActionCache[chunk]
+
+    local bits = currentActionCache[chunk]
+    local casting = castingActionCache[chunk]
+
+    -- band, not +: an instant that is both current and casting would otherwise
+    -- carry the same bit twice and corrupt every higher slot in the chunk.
+    if casting ~= 0 then
+        bits = bits + (casting - band(bits, casting))
+    end
+
+    return bits
 end
 
 function DataToColor:InvalidateCurrentActionCache()
@@ -642,27 +862,64 @@ function DataToColor:getUnitRangedDamage(unit)
     return floor((speed or 0) * 100)
 end
 
-function DataToColor:getAvgEquipmentDurability()
-    local current = 0
-    local max = 0
-    for i = 1, 18 do
-        local c, m = GetInventoryItemDurability(i)
-        current = current + (c or 0)
-        max = max + (m or 0)
+-- Equipment durability caches: cell 54 carries the all-slot average, cell 116 the
+-- per weapon slot breakdown. Both are filled by one pass over the inventory and
+-- share the dirty flag, so a single invalidate refreshes them together.
+-- Mainhand = 16, Offhand = 17, Ranged = 18 - see Core/Equipments/InventorySlotId.cs
+local FIRST_WEAPON_SLOT = 16
+local WEAPON_SLOT_MUL = { [16] = 10000, [17] = 100, [18] = 1 }
+
+-- 0-99. The +1 bias makes an empty slot - or an equipped item that has no
+-- durability at all, such as a thrown weapon or an off hand tome - report 99,
+-- while a genuinely broken item reports 0.
+local function durabilityPercent(current, maxValue)
+    local p = floor((current + 1) * 100 / (maxValue + 1)) - 1
+    if p < 0 then
+        return 0
     end
-    return math.max(0, floor((current + 1) * 100 / (max + 1)) - 1) -- 0-99
+    return p
 end
 
--- Equipment durability cache (cell 54)
 local cachedDurability = 0
+local cachedWeaponDurability = 0
 local durabilityDirty = true
+
+local function refreshDurability()
+    local current = 0
+    local max = 0
+    local weapon = 0
+
+    for i = 1, 18 do
+        local c, m = GetInventoryItemDurability(i)
+        c = c or 0
+        m = m or 0
+
+        current = current + c
+        max = max + m
+
+        if i >= FIRST_WEAPON_SLOT then
+            weapon = weapon + durabilityPercent(c, m) * WEAPON_SLOT_MUL[i]
+        end
+    end
+
+    cachedDurability = durabilityPercent(current, max)
+    cachedWeaponDurability = weapon
+    durabilityDirty = false
+end
 
 function DataToColor:getAvgEquipmentDurabilityCached()
     if durabilityDirty then
-        cachedDurability = DataToColor:getAvgEquipmentDurability()
-        durabilityDirty = false
+        refreshDurability()
     end
     return cachedDurability
+end
+
+-- mainHand * 10000 + offHand * 100 + ranged, each 0-99
+function DataToColor:getWeaponDurabilityCached()
+    if durabilityDirty then
+        refreshDurability()
+    end
+    return cachedWeaponDurability
 end
 
 function DataToColor:InvalidateDurabilityCache()

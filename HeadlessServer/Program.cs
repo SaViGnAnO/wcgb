@@ -2,6 +2,8 @@
 
 using Core;
 
+using Frontend;
+
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -9,6 +11,8 @@ using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Templates;
 using Serilog.Templates.Themes;
+
+using SharedLib.Logging;
 
 namespace HeadlessServer;
 
@@ -35,17 +39,15 @@ public sealed class Program
 
         services.AddLogging(builder =>
         {
-            const string outputTemplate = "[{@t:HH:mm:ss:fff} {@l:u1}] {#if Length(SourceContext) > 0}[{Substring(SourceContext, LastIndexOf(SourceContext, '.') + 1),-17}] {#end}{@m}\n{@x}";
-            //const string outputTemplate = "[{@t:HH:mm:ss:fff} {@l:u1}] {SourceContext}] {@m}\n{@x}";
-
             Log.Logger = new LoggerConfiguration()
                 .ReadFrom.Configuration(configuration)
                 .Enrich.FromLogContext()
-                .WriteTo.File(new ExpressionTemplate(outputTemplate),
+                .Enrich.With<ShortSourceContextEnricher>()
+                .WriteTo.File(new ExpressionTemplate(LogOutputTemplates.Default),
                     path: "headless_out.log",
                     rollingInterval: RollingInterval.Day)
-                .WriteTo.Debug(new ExpressionTemplate(outputTemplate))
-                .WriteTo.Console(new ExpressionTemplate(outputTemplate, theme: TemplateTheme.Literate))
+                .WriteTo.Debug(new ExpressionTemplate(LogOutputTemplates.Default))
+                .WriteTo.Console(new ExpressionTemplate(LogOutputTemplates.Default, theme: TemplateTheme.Literate))
                 .CreateLogger();
 
             builder.Services.AddSingleton<Microsoft.Extensions.Logging.ILogger>(logFactory.CreateLogger(string.Empty));
@@ -54,29 +56,52 @@ public sealed class Program
 
         ILogger<Program> log = logFactory.CreateLogger<Program>();
 
-        log.LogInformation($"Hosting environment: {environmentName ?? "Production"}");
+        if (log.IsEnabled(LogLevel.Information))
+        {
+            log.LogInformation($"Hosting environment: {environmentName ?? "Production"}");
 
-        log.LogInformation(
-            $"{Thread.CurrentThread.CurrentCulture.TwoLetterISOLanguageName} " +
-            $"{DateTimeOffset.Now}");
+            log.LogInformation(
+                $"{Thread.CurrentThread.CurrentCulture.TwoLetterISOLanguageName} " +
+                $"{DateTimeOffset.Now}");
+        }
+
+        // --help and --version come back as NotParsed too, but they are a satisfied
+        // request rather than a failure and must not report one.
+        bool helpOrVersion = false;
 
         ParserResult<RunOptions> options =
             Parser.Default.ParseArguments<RunOptions>(args).WithNotParsed(errors =>
         {
             foreach (Error? e in errors)
             {
+                if (e is HelpRequestedError or HelpVerbRequestedError or VersionRequestedError)
+                {
+                    helpOrVersion = true;
+                    continue;
+                }
+
                 log.LogError($"{e}");
             }
         });
 
         if (options.Tag == ParserResultType.NotParsed)
         {
+            Environment.ExitCode = helpOrVersion ? 0 : 1;
             goto Exit;
         }
 
         services.AddSingleton<RunOptions>(options.Value);
 
         services.AddStartupConfigFactories();
+
+        // Navmesh / follower tunables bind from the same configuration the host
+        // already built (json + env + command line).
+        services.Configure<SharedLib.NavmeshBakeOptions>(
+            configuration.GetSection(SharedLib.NavmeshBakeOptions.Position));
+        services.Configure<SharedLib.NavmeshQueryOptions>(
+            configuration.GetSection(SharedLib.NavmeshQueryOptions.Position));
+        services.Configure<SharedLib.SplineFollowerOptions>(
+            configuration.GetSection(SharedLib.SplineFollowerOptions.Position));
 
         if (!FrameConfig.Exists() || !AddonConfig.Exists())
         {
@@ -111,8 +136,8 @@ public sealed class Program
 
         if (options.Value.LoadOnly)
         {
-            headlessServer.RunLoadOnly(options);
-            Environment.Exit(0);
+            bool success = headlessServer.RunLoadOnly(options);
+            Environment.Exit(success ? 0 : 1);
         }
         else
         {
@@ -120,7 +145,22 @@ public sealed class Program
         }
 
     Exit:
-        Console.ReadKey();
+        // Keeps the window open when launched by double-click. Guarded because
+        // ReadKey throws InvalidOperationException when stdin is redirected or no
+        // console is attached, which turned `--help` and every parse error into an
+        // unhandled crash instead of a clean exit. run.bat already ends with `pause`,
+        // so nothing is lost when this is skipped.
+        if (!Console.IsInputRedirected)
+        {
+            try
+            {
+                Console.ReadKey(intercept: true);
+            }
+            catch (InvalidOperationException)
+            {
+                // No console to read from - exit quietly.
+            }
+        }
     }
 
     private static bool ConfigureServices(

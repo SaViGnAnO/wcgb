@@ -135,8 +135,7 @@ public sealed partial class BotController : IBotController, IDisposable
             !Enum.IsDefined<UnitClass>(playerReader.Class) ||
             playerReader.Class == UnitClass.None);
 
-        if (logger.IsEnabled(LogLevel.Information))
-            logger.LogInformation("{Version} {Race} {Class}!", playerReader.Version.ToStringF(), playerReader.Race.ToStringF(), playerReader.Class.ToStringF());
+        LogPlayerInfo(logger, playerReader.Version, playerReader.Faction, playerReader.Race, playerReader.Class);
 
         screenshotThread = new(ScreenshotThread);
         screenshotThread.Start();
@@ -206,13 +205,15 @@ public sealed partial class BotController : IBotController, IDisposable
                 {
                     if (oldSlot == 0)
                     {
-                        logger.LogInformation(
-                            "[{Name,-17}] Macro resolved: Slot:{Slot} -> Key:{ConsoleKey}", action.Name, newSlot, action.ConsoleKey);
+                        if (logger.IsEnabled(LogLevel.Information))
+                            logger.LogInformation(
+                                "[{Name,-17}] Macro resolved: Slot:{Slot} -> Key:{ConsoleKey}", action.Name, newSlot, action.ConsoleKey);
                     }
                     else if (oldSlot != newSlot)
                     {
-                        logger.LogInformation(
-                            "[{Name,-17}] Macro moved: Slot:{OldSlot} -> {NewSlot} -> Key:{ConsoleKey}", action.Name, oldSlot, newSlot, action.ConsoleKey);
+                        if (logger.IsEnabled(LogLevel.Information))
+                            logger.LogInformation(
+                                "[{Name,-17}] Macro moved: Slot:{OldSlot} -> {NewSlot} -> Key:{ConsoleKey}", action.Name, oldSlot, newSlot, action.ConsoleKey);
                     }
                 }
                 else if (newSlot == 0 && oldSlot > 0)
@@ -221,8 +222,9 @@ public sealed partial class BotController : IBotController, IDisposable
                     if (!string.IsNullOrEmpty(action.Key) &&
                         KeyReader.ResolveFromKeyString(logger, action))
                     {
-                        logger.LogInformation(
-                            "[{Name,-17}] Macro not on action bar, using Key:{Key} -> {ConsoleKey}", action.Name, action.Key, action.ConsoleKey);
+                        if (logger.IsEnabled(LogLevel.Information))
+                            logger.LogInformation(
+                                "[{Name,-17}] Macro not on action bar, using Key:{Key} -> {ConsoleKey}", action.Name, action.Key, action.ConsoleKey);
                     }
                     else
                     {
@@ -451,8 +453,11 @@ public sealed partial class BotController : IBotController, IDisposable
             return false;
         }
 
-        LogProfileLoadedTime(logger,
-            GetElapsedTime(startTime).TotalMilliseconds);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            double elapsedMs = GetElapsedTime(startTime).TotalMilliseconds;
+            LogProfileLoadedTime(logger, elapsedMs);
+        }
 
         return true;
     }
@@ -550,14 +555,16 @@ public sealed partial class BotController : IBotController, IDisposable
         return files;
     }
 
-    public void LoadClassProfile(string classFilename)
+    public bool LoadClassProfile(string classFilename)
     {
-        if (InitialiseFromFile(classFilename, SelectedPathFilename))
+        bool success = InitialiseFromFile(classFilename, SelectedPathFilename);
+        if (success)
         {
             SelectedClassFilename = classFilename;
         }
 
         ProfileLoaded?.Invoke();
+        return success;
     }
 
     public void LoadPathProfile(Dictionary<int, string> pathFilenames)
@@ -592,7 +599,7 @@ public sealed partial class BotController : IBotController, IDisposable
             string mailPath = Path.Join(dataConfig.Mail, ClassConfig.MailFilename);
             var mailJson = Newtonsoft.Json.Linq.JToken.FromObject(ClassConfig.MailConfig, serializer);
             File.WriteAllText(mailPath, mailJson.ToString(Newtonsoft.Json.Formatting.Indented));
-            logger.LogInformation("Saved Mail settings to {FilePath}", mailPath);
+            LogSavedMailSettings(logger, mailPath);
 
             // Update class config to reference external file and preserve Mail bool
             // Keep inline MailConfig as backup/reference - only update the external file reference
@@ -616,11 +623,17 @@ public sealed partial class BotController : IBotController, IDisposable
             jsonObj["MailConfig"] = Newtonsoft.Json.Linq.JToken.FromObject(ClassConfig.MailConfig, serializer);
 
             File.WriteAllText(filePath, jsonObj.ToString(Newtonsoft.Json.Formatting.Indented));
-            logger.LogInformation("Saved Mail settings to {FilePath}", filePath);
+            LogSavedMailSettings(logger, filePath);
         }
     }
 
     #region logging
+
+    [LoggerMessage(
+        EventId = 1003,
+        Level = LogLevel.Information,
+        Message = "Saved Mail settings to {FilePath}")]
+    static partial void LogSavedMailSettings(ILogger logger, string filePath);
 
     [LoggerMessage(
         EventId = 1000,
@@ -633,6 +646,12 @@ public sealed partial class BotController : IBotController, IDisposable
         Level = LogLevel.Information,
         Message = "ClassConfig: {profile} with Path: {path}")]
     static partial void LogProfileLoaded(ILogger logger, string profile, string path);
+
+    [LoggerMessage(
+        EventId = 1002,
+        Level = LogLevel.Information,
+        Message = "{Version} {Faction} {Race} {Class}!")]
+    static partial void LogPlayerInfo(ILogger logger, ClientVersion version, PlayerFaction faction, UnitRace race, UnitClass @class);
 
     #endregion
 }

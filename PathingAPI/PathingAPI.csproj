@@ -3,6 +3,7 @@
   <PropertyGroup>
 	  <UserSecretsId>199F51BE-7200-4EA9-97D0-287EFCB371BD</UserSecretsId>
 	  <DocumentationFile>PathingAPI.xml</DocumentationFile>
+	  <Nullable>annotations</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,6 +17,7 @@
     <PackageReference Include="MessagePack" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" />
     <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Expressions" />
     <PackageReference Include="Serilog.Extensions.Logging" />
     <PackageReference Include="Serilog.Sinks.File" />
     <PackageReference Include="Swashbuckle.AspNetCore" />

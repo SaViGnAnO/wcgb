@@ -83,6 +83,25 @@ public sealed class AreaDB : IDisposable
         resetEvent.Set();
     }
 
+    /// <summary>
+    /// Reads an optional json file. Absent is a normal state here, not an error, so it
+    /// is reported once at Debug rather than raised - the caller substitutes a default.
+    /// </summary>
+    private T? ReadJsonOrNull<T>(string path, JsonSerializerSettings? settings = null)
+    {
+        if (!System.IO.File.Exists(path))
+        {
+            if (logger.IsEnabled(LogLevel.Debug))
+                logger.LogDebug("AreaDB: no {Path}", path);
+
+            return default;
+        }
+
+        return settings is null
+            ? JsonConvert.DeserializeObject<T>(ReadAllText(path))
+            : JsonConvert.DeserializeObject<T>(ReadAllText(path), settings);
+    }
+
     private void ReadArea()
     {
         resetEvent.Wait();
@@ -91,19 +110,32 @@ public sealed class AreaDB : IDisposable
         {
             try
             {
-                CurrentArea = JsonConvert.DeserializeObject<Area>(
-                    ReadAllText(Join(dataConfig.ExpArea, $"{areaId}.json")));
+                // Both files are optional enrichment and both are generated per client,
+                // so a zone or a whole map legitimately has none - Json/area/<exp> is
+                // scraped from Wowhead, npcspawnlocations from an emulator dump, and
+                // neither covers every map of every client. Previously a miss threw out
+                // of the whole block, so Changed never fired and the area data silently
+                // stopped updating for that map (hit on Kezan, map 648, which had no
+                // npcspawnlocations file).
+                CurrentArea = ReadJsonOrNull<Area>(Join(dataConfig.ExpArea, $"{areaId}.json"));
 
                 CurrentWorldMapArea = worldMapAreaDB.GetByAreaId(areaId);
 
                 Hitbox = worldMapAreaDB.GetByAreaIdHit(areaId);
 
-                var data = JsonConvert.DeserializeObject<Dictionary<int, Vector3[]>>(
-                    ReadAllText(Join(dataConfig.NpcSpawnLocations, $"{CurrentWorldMapArea.Value.MapID}.json")), npcJsonSettings);
+                NpcWorldLocations = FrozenDictionary<int, Vector3[]>.Empty;
 
-                NpcWorldLocations = data != null
-                    ? data.ToFrozenDictionary()
-                    : FrozenDictionary<int, Vector3[]>.Empty;
+                if (CurrentWorldMapArea.HasValue)
+                {
+                    var data = ReadJsonOrNull<Dictionary<int, Vector3[]>>(
+                        Join(dataConfig.NpcSpawnLocations, $"{CurrentWorldMapArea.Value.MapID}.json"),
+                        npcJsonSettings);
+
+                    if (data != null)
+                    {
+                        NpcWorldLocations = data.ToFrozenDictionary();
+                    }
+                }
 
                 Changed?.Invoke();
             }
@@ -137,7 +169,8 @@ public sealed class AreaDB : IDisposable
         string[] allowedNames,
         Span<NpcSearchResult> destination, // caller-provided buffer
         out int written,
-        bool crossZoneSearch = false)
+        bool crossZoneSearch = false,
+        string? subNameContains = null)
     {
         written = 0;
 
@@ -153,6 +186,14 @@ public sealed class AreaDB : IDisposable
                 if (allowedNames.Length != 0 && !allowedNames.Contains(n.Name))
                     continue;
 
+                // NpcFlags.ClassTrainer marks every class's trainer alike, so without
+                // this the nearest few are usually the wrong class - and the caller's
+                // buffer fills with them before the right one is ever considered.
+                if (subNameContains != null &&
+                    (n.SubName == null ||
+                    !n.SubName.Contains(subNameContains, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
                 if (!NpcWorldLocations.TryGetValue(n.Entry, out Vector3[]? worldPos))
                     continue;
 
@@ -165,7 +206,7 @@ public sealed class AreaDB : IDisposable
                             continue;
                     }
 
-                    if (!FriendlyToPlayer(n, faction, factionDB))
+                    if (!FactionExt.FriendlyToPlayer(n, faction, factionDB))
                         continue;
 
                     float d = playerPosW.WorldDistanceXYTo(pos);
@@ -189,27 +230,6 @@ public sealed class AreaDB : IDisposable
         {
             pool.Return(rented, clearArray: false);
         }
-    }
-
-    static bool FriendlyToPlayer(Creature npc, PlayerFaction playerFaction, FactionTemplateDB factionDB)
-    {
-        if (!factionDB.Factions.TryGetValue(npc.Faction, out int friendGroup))
-            return false;
-
-        const int AllPlayers = 1;
-
-        const int AlliancePlayers = 2;
-        int allianceOurMask = AllPlayers | AlliancePlayers;
-
-        const int HordePlayers = 4;
-        int hordeOurMask = AllPlayers | HordePlayers;
-
-        return playerFaction switch
-        {
-            PlayerFaction.Alliance => (friendGroup & allianceOurMask) != 0,
-            PlayerFaction.Horde => (friendGroup & hordeOurMask) != 0,
-            _ => false
-        };
     }
 
     public (Creature, Vector3) FindClosestCreatureByNpcFlag(NpcFlags npcFlag, Vector3 position)

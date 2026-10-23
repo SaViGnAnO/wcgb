@@ -1,11 +1,15 @@
-﻿window.addEventListener('DOMContentLoaded', function () {
+window.addEventListener('DOMContentLoaded', function () {
 
     const div = 10.0;
     const textures = ["grass.png", "waterbump.png", "floor.png", "ground.jpg"];
 
     var cameraPositionSet = false;
-    var startedRendering = false;
     var modelId = 0;
+    var dirty = true;
+
+    function requestRender() {
+        dirty = true;
+    }
 
     const layers = 4;
     var materials = new Array(layers);
@@ -19,6 +23,7 @@
         if (scene == null) return;
 
         scene.getMeshByName(name)?.dispose();
+        requestRender();
     }
 
     clear = function () {
@@ -30,6 +35,7 @@
                 mesh.dispose();
         }
         cameraPositionSet = false;
+        requestRender();
     }
 
     setCamera = function (pos, look, height) {
@@ -43,6 +49,7 @@
         cameraPositionSet = true;
         camera.position = new BABYLON.Vector3(pos.x / div, (pos.z / div) + height, pos.y / div);
         camera.setTarget(new BABYLON.Vector3(look.x / div, look.z / div, look.y / div));
+        requestRender();
     }
 
     log = function (message) {
@@ -62,8 +69,11 @@
         if (scene == null) return;
 
         for (let i = 0; i < materials.length; i++) {
+            materials[i].unfreeze();
             materials[i].wireframe = !materials[i].wireframe;
+            materials[i].freeze();
         }
+        requestRender();
     }
 
     toggleLayer = function (layer) {
@@ -78,6 +88,7 @@
             case 8: layer = 3; break;
         }
         rootNodes[layer].setEnabled(!rootNodes[layer].isEnabled());
+        requestRender();
     }
 
     getColour = function (color) {
@@ -129,7 +140,7 @@
 
         height /= 10;
 
-        const v = new BABYLON.Vector3.FromArray(array);
+        const v = BABYLON.Vector3.FromArray(array);
 
         const points = [
             new BABYLON.Vector3(v.x / div, v.z / div, v.y / div),
@@ -139,10 +150,11 @@
 
         const line = BABYLON.MeshBuilder.CreateLines(name, { points: points }, scene);
         line.color = c;
-        
+
         line.enableEdgesRendering();
         line.edgesWidth = 5.0;
         line.edgesColor = new BABYLON.Color4(c.r, c.g, c.b, 1);
+        requestRender();
     })
 
     connection.on("drawLines", (arrays, color, name) => {
@@ -160,7 +172,7 @@
 
         const vectors = []
         for (let i = arrays.length - 1; i >= 0; i--) {
-            const v = new BABYLON.Vector3.FromArray(arrays[i]);
+            const v = BABYLON.Vector3.FromArray(arrays[i]);
             v.y = v.y + height;
             vectors.push(new BABYLON.Vector3(v.x / div, v.z / div, v.y / div));
         }
@@ -174,7 +186,7 @@
             particle.color = c;
         });
 
-        pcs.buildMeshAsync();
+        pcs.buildMeshAsync().then(requestRender);
     })
 
     connection.on("drawWeightedLines", (arrays, name) => {
@@ -209,7 +221,7 @@
             particle.color = hslToColor4(hue);
         });
 
-        pcs.buildMeshAsync();
+        pcs.buildMeshAsync().then(requestRender);
     })
 
     // HSL to BABYLON.Color4 without string allocation.
@@ -230,11 +242,13 @@
 
         if (arrays.length === 0) return;
 
-        const height = 0 //getHeight(color);
+        // Small lift so paths projected exactly onto a surface (navmesh CPOP
+        // output) do not z-fight with it.
+        const height = 0.3 / div;
 
         const vectors = [];
         for (i = 0; i < arrays.length; i++) {
-            const t = new BABYLON.Vector3.FromArray(arrays[i]);
+            const t = BABYLON.Vector3.FromArray(arrays[i]);
             const v = new BABYLON.Vector3(t.x / div, (t.z / div) + height, t.y / div)
             vectors.push(v);
         }
@@ -249,11 +263,10 @@
         lines.edgesColor = new BABYLON.Color4(c.r, c.g, c.b, 1);
         lines.color = c;
 
-        const start = new BABYLON.Vector3.FromArray(arrays[0]);
-        const end = new BABYLON.Vector3.FromArray(arrays[arrays.length - 1]);
+        const start = BABYLON.Vector3.FromArray(arrays[0]);
+        const end = BABYLON.Vector3.FromArray(arrays[arrays.length - 1]);
         setCamera(start, end, 20);
-
-        //console.log("drawPath: " + name + " completed.");
+        requestRender();
     })
 
     connection.on("addModels", (loadedIndices, loadedPositions) => {
@@ -262,8 +275,8 @@
         if (loadedPositions.length === 0)
             return;
 
-        const start = new BABYLON.Vector3.FromArray(loadedPositions[0]);
-        const end = new BABYLON.Vector3.FromArray(loadedPositions[loadedPositions.length - 1]);
+        const start = BABYLON.Vector3.FromArray(loadedPositions[0]);
+        const end = BABYLON.Vector3.FromArray(loadedPositions[loadedPositions.length - 1]);
 
         setCamera(start, end, 20);
 
@@ -272,7 +285,7 @@
         const baseX = -4, baseZ = -4, scale = 4;
 
         for (let i = 0; i < loadedPositions.length; i++) {
-            const p = new BABYLON.Vector3.FromArray(loadedPositions[i]);
+            const p = BABYLON.Vector3.FromArray(loadedPositions[i]);
             const index = i * 3;
             positions[index] = p.x / div;
             positions[index + 1] = p.z / div;
@@ -304,6 +317,58 @@
             customMesh.material = materials[p % materials.length];
             customMesh.parent = rootNodes[p % rootNodes.length];
         }
+        requestRender();
+    });
+
+    connection.on("addNavmeshTile", (name, flatPositions, groundIndices, liquidIndices) => {
+        if (scene == null) return;
+
+        removeMesh(name + "_g");
+        removeMesh(name + "_w");
+
+        if (flatPositions.length === 0)
+            return;
+
+        // flatPositions is [wowX, wowY, wowZ, ...]; same axis mapping as the
+        // other handlers: babylon(x, y, z) = wow(x, z, y) / div.
+        const count = flatPositions.length / 3;
+        const positions = new Float32Array(flatPositions.length);
+        for (let i = 0; i < count; i++) {
+            const index = i * 3;
+            positions[index] = flatPositions[index] / div;
+            positions[index + 1] = flatPositions[index + 2] / div;
+            positions[index + 2] = flatPositions[index + 1] / div;
+        }
+
+        const buildLayer = (suffix, indices, r, g, b, alpha) => {
+            if (indices.length === 0)
+                return;
+
+            const mesh = new BABYLON.Mesh(name + suffix, scene);
+            const normals = new Float32Array(positions.length);
+            BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+
+            const vertexData = new BABYLON.VertexData();
+            vertexData.positions = positions;
+            vertexData.indices = indices;
+            vertexData.normals = normals;
+            vertexData.applyToMesh(mesh);
+
+            const mat = new BABYLON.StandardMaterial(name + suffix + "_mat", scene);
+            mat.emissiveColor = new BABYLON.Color3(r, g, b);
+            mat.disableLighting = true;
+            mat.alpha = alpha;
+            mat.backFaceCulling = false;
+            // Push the overlay back in the depth buffer so co-planar path
+            // lines (CPOP-projected onto this very surface) stay visible.
+            mat.zOffset = 4;
+            mesh.material = mat;
+        };
+
+        buildLayer("_g", groundIndices, 0.15, 0.9, 0.3, 0.35);
+        buildLayer("_w", liquidIndices, 0.15, 0.4, 0.95, 0.4);
+
+        requestRender();
     });
 
     connection.on("drawBoundBox", (min, max, color, name) => {
@@ -311,8 +376,8 @@
 
         removeMesh(name);
 
-        const v1 = new BABYLON.Vector3.FromArray(min);
-        const v2 = new BABYLON.Vector3.FromArray(max);
+        const v1 = BABYLON.Vector3.FromArray(min);
+        const v2 = BABYLON.Vector3.FromArray(max);
 
         const v11 = new BABYLON.Vector3(v1.x / div, v1.z / div, v1.y / div);
         const v22 = new BABYLON.Vector3(v2.x / div, v2.z / div, v2.y / div);
@@ -325,7 +390,7 @@
             v11.x, v11.y, v22.z,
             v22.x, v11.y, v22.z,
             v22.x, v22.y, v22.z,
-            v11.x, v22.y, v22.z 
+            v11.x, v22.y, v22.z
         ];
 
         const indices = [
@@ -334,11 +399,11 @@
             5, 4, 7, 5, 7, 6,
             4, 0, 3, 4, 3, 7,
             3, 2, 6, 3, 6, 7,
-            4, 5, 1, 4, 1, 0 
+            4, 5, 1, 4, 1, 0
         ];
 
         const material = new BABYLON.StandardMaterial(scene);
-        material.diffuseColor = getColour(color);  
+        material.diffuseColor = getColour(color);
         material.wireframe = true;
 
         const box = new BABYLON.Mesh(name, scene);
@@ -349,6 +414,7 @@
         data.indices = indices;
 
         data.applyToMesh(box);
+        requestRender();
     });
 
     /* JSON Based */
@@ -362,6 +428,7 @@
         else {
             scene.debugLayer.hide();
         }
+        requestRender();
     }
 
     drawSphere = function (vector, color, name) {
@@ -376,8 +443,7 @@
         material.diffuseColor = getColour(color);
         sphere.material = material;
         sphere.position = new BABYLON.Vector3(vector.x / div, (vector.z / div) + getHeight(color), vector.y / div);
-
-        //console.log("drawSphere: " + name + " completed.");
+        requestRender();
     }
 
     drawLine = function (vector, color, name) {
@@ -402,14 +468,15 @@
 
         const line = BABYLON.MeshBuilder.CreateLines(name, { points: points }, scene);
         line.color = c;
-   
+
         line.enableEdgesRendering();
         line.edgesWidth = 5.0;
         line.edgesColor = new BABYLON.Color4(c.r, c.g, c.b, 1);
-        
+
         if (name === "start") {
             setCamera(vector, vector, 10);
         }
+        requestRender();
     }
 
     drawLineDebug = function (vector, color, name) {
@@ -448,8 +515,7 @@
         lines.color = getColour(color);
 
         setCamera(points[0], points[points.length - 1], 20);
-
-        //console.log("drawPath: " + name + " completed.");
+        requestRender();
     }
 
     createScene = function () {
@@ -457,7 +523,6 @@
 
         canvas = document.getElementById('renderCanvas');// get the canvas DOM element
         engine = new BABYLON.Engine(canvas, true); // load the 3D engine
-        engine.setHardwareScalingLevel(0.5);
 
         scene = new BABYLON.Scene(engine);// create a basic BJS Scene object
 
@@ -465,7 +530,7 @@
         light.intesity = 0.5;
 
         // the canvas/window resize event handler
-        window.addEventListener('resize', function () { engine.resize(); });
+        window.addEventListener('resize', function () { engine.resize(); requestRender(); });
 
         camera = new BABYLON.FreeCamera('camera1', new BABYLON.Vector3(0, 50, 0), scene);
         camera.keysUp.push(87);         // "w"
@@ -488,6 +553,7 @@
             const mat = new BABYLON.StandardMaterial("mat" + i, scene);
             mat.diffuseTexture = new BABYLON.Texture("https://www.babylonjs-playground.com/textures/" + textures[i])
             mat.backFaceCulling = false;
+            mat.freeze();
             materials[i] = mat;
         }
 
@@ -500,12 +566,13 @@
         skyboxMaterial.diffuseColor = new BABYLON.Color3(0, 0, 0);
         skyboxMaterial.specularColor = new BABYLON.Color3(0, 0, 0);
         skybox.material = skyboxMaterial;
+        skyboxMaterial.freeze();
 
-        engine.runRenderLoop(function () {
-            if (!scene.paused) {
-                scene.render();
-            }
-        });
+        // On-demand rendering: render loop runs but only calls scene.render() when dirty.
+        // This keeps Babylon's input system (camera keyboard/mouse) fully functional.
+        var lastCameraPos = camera.position.clone();
+        var lastCameraRot = camera.rotation.clone();
+        const inertiaThreshold = 0.0001;
 
         var energy = 0;
         var shiftPressed = false;
@@ -528,35 +595,49 @@
                 }
             }
         });
-        scene.onKeyboardObservable.add((kbInfo) => {
-            switch (kbInfo.type) {
-                case BABYLON.KeyboardEventTypes.KEYDOWN:
-                    switch (kbInfo.event.key) {
-                        case "Shift":
-                            shiftPressed = true;
-                            kbInfo.event.preventDefault();
-                            break;
-                        case "Alt":
-                            altPressed = true;
-                            kbInfo.event.preventDefault();
-                            break;
-                    }
-                    break;
 
-                case BABYLON.KeyboardEventTypes.KEYUP:
-                    switch (kbInfo.event.key) {
-                        case "Shift":
-                            shiftPressed = false;
-                            kbInfo.event.preventDefault();
-                            break;
-                        case "Alt":
-                            altPressed = false;
-                            kbInfo.event.preventDefault();
-                            break;
-                        case "o":
-                            log("Camera Position: " + camera.position);
-                            break;
-                    }
+        engine.runRenderLoop(function () {
+            if (dirty) {
+                scene.render();
+
+                // Check if camera moved or rotated (includes inertia drift)
+                const dp = BABYLON.Vector3.DistanceSquared(camera.position, lastCameraPos);
+                const rx = camera.rotation.x - lastCameraRot.x;
+                const ry = camera.rotation.y - lastCameraRot.y;
+                const dr = rx * rx + ry * ry;
+
+                if (dp > inertiaThreshold || dr > inertiaThreshold) {
+                    // Camera still moving — keep rendering and track position
+                    lastCameraPos.copyFrom(camera.position);
+                    lastCameraRot.copyFrom(camera.rotation);
+                } else {
+                    // Camera settled — stop rendering until next dirty flag
+                    dirty = false;
+                }
+            }
+        });
+
+        // Any keyboard input marks dirty (handles WASD, arrows, shift, alt)
+        document.addEventListener('keydown', function (e) {
+            dirty = true;
+            switch (e.key) {
+                case "Shift": shiftPressed = true; break;
+                case "Alt": altPressed = true; e.preventDefault(); break;
+            }
+        });
+        document.addEventListener('keyup', function (e) {
+            dirty = true;
+            switch (e.key) {
+                case "Shift": shiftPressed = false; break;
+                case "Alt": altPressed = false; break;
+                case "o": log("Camera Position: " + camera.position); break;
+            }
+        });
+
+        // Mouse look/drag triggers render
+        canvas.addEventListener('pointermove', function (e) {
+            if (e.buttons > 0) {
+                dirty = true;
             }
         });
 
